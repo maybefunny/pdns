@@ -883,9 +883,8 @@ static void setupLuaRecords()
       vector<pair<int,ComboAddress> > conv;
       for(const auto& c : unit) {
         int weight = 0;
-        if(weight = g_up.isUp(c, url, opts)) {
-          conv.emplace_back(weight, c);
-        }
+        weight = g_up.isUp(c, url, opts)
+        conv.emplace_back(weight, c);
       }
       if(!available.empty()) {
         return pickwhashed(s_lua_record_ctx->bestwho, conv).toString();
@@ -895,13 +894,13 @@ static void setupLuaRecords()
     }
 
     // All units down, apply backupSelector on all candidates
-    vector<ComboAddress> ret{};
-    for(const auto& unit : candidates) {
-      ret.insert(ret.end(), unit.begin(), unit.end());
-    }
+    // vector<ComboAddress> ret{};
+    // for(const auto& unit : candidates) {
+    //   ret.insert(ret.end(), unit.begin(), unit.end());
+    // }
 
-    vector<ComboAddress> res = useSelector(getOptionValue(options, "backupSelector", "random"), s_lua_record_ctx->bestwho, ret);
-    return convIpListToString(res);
+    // vector<ComboAddress> res = useSelector(getOptionValue(options, "backupSelector", "random"), s_lua_record_ctx->bestwho, ret);
+    // return convIpListToString(res);
   });
 
   if (g_luaRecordExecLimit > 0) {
