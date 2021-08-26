@@ -82,9 +82,9 @@ public:
   ~IsUpOracle()
   {
   }
-  bool isUp(const ComboAddress& remote, const opts_t& opts);
-  bool isUp(const ComboAddress& remote, const std::string& url, const opts_t& opts);
-  bool isUp(const CheckDesc& cd);
+  int isUp(const ComboAddress& remote, const opts_t& opts);
+  int isUp(const ComboAddress& remote, const std::string& url, const opts_t& opts);
+  int isUp(const CheckDesc& cd);
 
 private:
   void checkURL(const CheckDesc& cd, const bool status, const bool first = false)
@@ -234,7 +234,7 @@ private:
   }
 };
 
-bool IsUpOracle::isUp(const CheckDesc& cd)
+int IsUpOracle::isUp(const CheckDesc& cd)
 {
   if (!d_checkerThread) {
     d_checkerThread = std::unique_ptr<std::thread>(new std::thread(&IsUpOracle::checkThread, this));
@@ -265,13 +265,13 @@ bool IsUpOracle::isUp(const CheckDesc& cd)
   return false;
 }
 
-bool IsUpOracle::isUp(const ComboAddress& remote, const opts_t& opts)
+int IsUpOracle::isUp(const ComboAddress& remote, const opts_t& opts)
 {
   CheckDesc cd{remote, "", opts};
   return isUp(cd);
 }
 
-bool IsUpOracle::isUp(const ComboAddress& remote, const std::string& url, const opts_t& opts)
+int IsUpOracle::isUp(const ComboAddress& remote, const std::string& url, const opts_t& opts)
 {
   CheckDesc cd{remote, url, opts};
   return isUp(cd);
@@ -884,7 +884,7 @@ static void setupLuaRecords()
       for(const auto& c : unit) {
         int weight = 0;
         if(weight = g_up.isUp(c, url, opts)) {
-          conv.push_back(weight, c);
+          conv.emplace_back(weight, c);
         }
       }
       if(!available.empty()) {
