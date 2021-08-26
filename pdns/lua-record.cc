@@ -113,6 +113,7 @@ private:
       }
       if(!status) {
         g_log<<Logger::Info<<"LUA record monitoring declaring "<<cd.rem.toString()<<" UP for URL "<<cd.url<<"!"<<endl;
+        g_log<<Logger::Info<<"LUA record monitoring declaring "<<cd.rem.toString()<<" WEIGHT is "<<content<<"!"<<endl;
       }
       setWeight(cd, content);
       setUp(cd);
