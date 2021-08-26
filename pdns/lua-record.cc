@@ -796,25 +796,27 @@ static void setupLuaRecords()
 
       for(const auto& unit : candidates) {
         vector<ComboAddress> available;
+        vector<pair<int,ComboAddress> > conv;
         for(const auto& c : unit) {
-          if(g_up.isUp(c, url, opts)) {
-            available.push_back(c);
-          }
+          int weight = 0;
+          weight = g_up.isUp(c, url, opts);
+          conv.emplace_back(weight, c);
         }
-        if(!available.empty()) {
-          vector<ComboAddress> res = useSelector(getOptionValue(options, "selector", "random"), s_lua_record_ctx->bestwho, available);
-          return convIpListToString(res);
-        }
+        // if(!available.empty()) {
+        return pickwhashed(s_lua_record_ctx->bestwho, conv).toString();
+          // vector<ComboAddress> res = useSelector(getOptionValue(options, "selector", "random"), s_lua_record_ctx->bestwho, available);
+          // return convIpListToString(res);
+        // }
       }
 
       // All units down, apply backupSelector on all candidates
-      vector<ComboAddress> ret{};
-      for(const auto& unit : candidates) {
-        ret.insert(ret.end(), unit.begin(), unit.end());
-      }
+      // vector<ComboAddress> ret{};
+      // for(const auto& unit : candidates) {
+      //   ret.insert(ret.end(), unit.begin(), unit.end());
+      // }
 
-      vector<ComboAddress> res = useSelector(getOptionValue(options, "backupSelector", "random"), s_lua_record_ctx->bestwho, ret);
-      return convIpListToString(res);
+      // vector<ComboAddress> res = useSelector(getOptionValue(options, "backupSelector", "random"), s_lua_record_ctx->bestwho, ret);
+      // return convIpListToString(res);
     });
   /*
    * Returns a random IP address from the supplied list
@@ -886,11 +888,11 @@ static void setupLuaRecords()
         weight = g_up.isUp(c, url, opts);
         conv.emplace_back(weight, c);
       }
-      if(!available.empty()) {
-        return pickwhashed(s_lua_record_ctx->bestwho, conv).toString();
+      // if(!available.empty()) {
+      return pickwhashed(s_lua_record_ctx->bestwho, conv).toString();
         // vector<ComboAddress> res = useSelector(getOptionValue(options, "selector", "random"), s_lua_record_ctx->bestwho, available);
         // return convIpListToString(res);
-      }
+      // }
     }
 
     // All units down, apply backupSelector on all candidates
