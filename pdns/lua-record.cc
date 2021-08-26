@@ -67,6 +67,8 @@ private:
     CheckState(time_t _lastAccess): lastAccess(_lastAccess) {}
     /* current status */
     std::atomic<bool> status{false};
+    /* current weight */
+    std::atomic<int> weight{0};
     /* first check ? */
     std::atomic<bool> first{true};
     /* last time the status was accessed */
@@ -113,6 +115,7 @@ private:
       if(!status) {
         g_log<<Logger::Info<<"LUA record monitoring declaring "<<cd.rem.toString()<<" UP for URL "<<cd.url<<"!"<<endl;
       }
+      setWeight(cd, content);
       setUp(cd);
     }
     catch(std::exception& ne) {
@@ -202,6 +205,12 @@ private:
     }
   }
 
+  void setWeight(const CheckDesc& cd, string content){
+    ReadLock lock{&d_lock};
+    auto& state = d_statuses[cd];
+    state->weight = stoi(content);
+  }
+
   void setDown(const ComboAddress& rem, const std::string& url=std::string(), const opts_t& opts = opts_t())
   {
     CheckDesc cd{rem, url, opts};
@@ -237,6 +246,9 @@ bool IsUpOracle::isUp(const CheckDesc& cd)
     auto iter = d_statuses.find(cd);
     if (iter != d_statuses.end()) {
       iter->second->lastAccess = now;
+      if (iter->second->weight > 0) {
+        return iter->second->weight;
+      }
       return iter->second->status;
     }
   }
@@ -867,6 +879,50 @@ static void setupLuaRecords()
       return pickclosest(s_lua_record_ctx->bestwho, conv).toString();
 
     });
+
+  lua.writeFunction("selftWeighted", [](const std::string& url,
+                                          const boost::variant<iplist_t, ipunitlist_t>& ips,
+                                          boost::optional<opts_t> options) {
+    vector<vector<ComboAddress> > candidates;
+    opts_t opts;
+    if(options)
+      opts = *options;
+    if(auto simple = boost::get<iplist_t>(&ips)) {
+      vector<ComboAddress> unit = convIplist(*simple);
+      candidates.push_back(unit);
+    } else {
+      auto units = boost::get<ipunitlist_t>(ips);
+      for(const auto& u : units) {
+        vector<ComboAddress> unit = convIplist(u.second);
+        candidates.push_back(unit);
+      }
+    }
+
+    for(const auto& unit : candidates) {
+      vector<ComboAddress> available;
+      vector<pair<int,ComboAddress> > conv;
+      for(const auto& c : unit) {
+        int weight = 0;
+        if(weight = g_up.isUp(c, url, opts)) {
+          conv.push_back(weight, c);
+        }
+      }
+      if(!available.empty()) {
+        return pickwhashed(s_lua_record_ctx->bestwho, conv).toString();
+        // vector<ComboAddress> res = useSelector(getOptionValue(options, "selector", "random"), s_lua_record_ctx->bestwho, available);
+        // return convIpListToString(res);
+      }
+    }
+
+    // All units down, apply backupSelector on all candidates
+    vector<ComboAddress> ret{};
+    for(const auto& unit : candidates) {
+      ret.insert(ret.end(), unit.begin(), unit.end());
+    }
+
+    vector<ComboAddress> res = useSelector(getOptionValue(options, "backupSelector", "random"), s_lua_record_ctx->bestwho, ret);
+    return convIpListToString(res);
+  });
 
   if (g_luaRecordExecLimit > 0) {
       lua.executeCode(boost::str(boost::format("debug.sethook(report, '', %d)") % g_luaRecordExecLimit));
