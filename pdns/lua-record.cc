@@ -115,6 +115,7 @@ private:
         g_log<<Logger::Info<<"LUA record monitoring declaring "<<cd.rem.toString()<<" UP for URL "<<cd.url<<"!"<<endl;
         g_log<<Logger::Info<<"LUA record monitoring declaring "<<cd.rem.toString()<<" WEIGHT is "<<content<<"!"<<endl;
       }
+      // TODO: create a working setWeight
       setWeight(cd, content);
       setUp(cd);
     }
@@ -166,6 +167,7 @@ private:
           auto& desc = it.first;
           auto& state = it.second;
 
+          // TODO: add new check method / modify checkURL method
           if (desc.url.empty()) { // TCP
             results.push_back(std::async(std::launch::async, &IsUpOracle::checkTCP, this, desc, state->status.load(), state->first.load()));
           } else { // URL
@@ -204,7 +206,8 @@ private:
       state->first = false;
     }
   }
-
+  
+  // TODO: create a working setWeight
   void setWeight(const CheckDesc& cd, string content){
     ReadLock lock{&d_lock};
     auto& state = d_statuses[cd];
