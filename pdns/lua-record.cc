@@ -883,7 +883,7 @@ static void setupLuaRecords()
       vector<pair<int,ComboAddress> > conv;
       for(const auto& c : unit) {
         int weight = 0;
-        weight = g_up.isUp(c, url, opts)
+        weight = g_up.isUp(c, url, opts);
         conv.emplace_back(weight, c);
       }
       if(!available.empty()) {
