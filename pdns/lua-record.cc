@@ -799,7 +799,7 @@ static void setupLuaRecords()
       }
 
       for(const auto& unit : candidates) {
-        vector<ComboAddress> available;
+        // vector<ComboAddress> available;
         vector<pair<int,ComboAddress> > conv;
         bool available = 0;
         for(const auto& c : unit) {
