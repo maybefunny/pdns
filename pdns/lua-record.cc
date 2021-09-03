@@ -823,8 +823,8 @@ static void setupLuaRecords()
         ret.insert(ret.end(), unit.begin(), unit.end());
       }
 
-      vector<ComboAddress> res = useSelector(getOptionValue(options, "backupSelector", "random"), s_lua_record_ctx->bestwho, ret);
-      return convIpListToString(res);
+      // vector<ComboAddress> res = useSelector(getOptionValue(options, "backupSelector", "random"), s_lua_record_ctx->bestwho, ret);
+      return pickrandom(ret).toString();
     });
   /*
    * Returns a random IP address from the supplied list
@@ -913,8 +913,8 @@ static void setupLuaRecords()
       ret.insert(ret.end(), unit.begin(), unit.end());
     }
 
-    vector<ComboAddress> res = useSelector(getOptionValue(options, "backupSelector", "random"), s_lua_record_ctx->bestwho, ret);
-    return convIpListToString(res);
+    // vector<ComboAddress> res = useSelector(getOptionValue(options, "backupSelector", "random"), s_lua_record_ctx->bestwho, ret);
+    return pickrandom(ret).toString();
   });
 
   if (g_luaRecordExecLimit > 0) {
