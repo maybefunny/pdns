@@ -2,141 +2,14 @@
 import base64
 import dns
 import os
-import re
 import time
 import unittest
 import clientsubnetoption
-from dnsdisttests import DNSDistTest
+
+from dnsdistdohtests import DNSDistDOHTest
 
 import pycurl
 from io import BytesIO
-
-@unittest.skipIf('SKIP_DOH_TESTS' in os.environ, 'DNS over HTTPS tests are disabled')
-class DNSDistDOHTest(DNSDistTest):
-
-    @classmethod
-    def getDOHGetURL(cls, baseurl, query, rawQuery=False):
-        if rawQuery:
-            wire = query
-        else:
-            wire = query.to_wire()
-        param = base64.urlsafe_b64encode(wire).decode('UTF8').rstrip('=')
-        return baseurl + "?dns=" + param
-
-    @classmethod
-    def openDOHConnection(cls, port, caFile, timeout=2.0):
-        conn = pycurl.Curl()
-        conn.setopt(pycurl.HTTP_VERSION, pycurl.CURL_HTTP_VERSION_2)
-
-        conn.setopt(pycurl.HTTPHEADER, ["Content-type: application/dns-message",
-                                         "Accept: application/dns-message"])
-        return conn
-
-    @classmethod
-    def sendDOHQuery(cls, port, servername, baseurl, query, response=None, timeout=2.0, caFile=None, useQueue=True, rawQuery=False, rawResponse=False, customHeaders=[], useHTTPS=True):
-        url = cls.getDOHGetURL(baseurl, query, rawQuery)
-        conn = cls.openDOHConnection(port, caFile=caFile, timeout=timeout)
-        response_headers = BytesIO()
-        #conn.setopt(pycurl.VERBOSE, True)
-        conn.setopt(pycurl.URL, url)
-        conn.setopt(pycurl.RESOLVE, ["%s:%d:127.0.0.1" % (servername, port)])
-        if useHTTPS:
-            conn.setopt(pycurl.SSL_VERIFYPEER, 1)
-            conn.setopt(pycurl.SSL_VERIFYHOST, 2)
-            if caFile:
-                conn.setopt(pycurl.CAINFO, caFile)
-
-        conn.setopt(pycurl.HTTPHEADER, customHeaders)
-        conn.setopt(pycurl.HEADERFUNCTION, response_headers.write)
-
-        if response:
-            cls._toResponderQueue.put(response, True, timeout)
-
-        receivedQuery = None
-        message = None
-        cls._response_headers = ''
-        data = conn.perform_rb()
-        cls._rcode = conn.getinfo(pycurl.RESPONSE_CODE)
-        if cls._rcode == 200 and not rawResponse:
-            message = dns.message.from_wire(data)
-        elif rawResponse:
-            message = data
-
-        if useQueue and not cls._fromResponderQueue.empty():
-            receivedQuery = cls._fromResponderQueue.get(True, timeout)
-
-        cls._response_headers = response_headers.getvalue()
-        return (receivedQuery, message)
-
-    @classmethod
-    def sendDOHPostQuery(cls, port, servername, baseurl, query, response=None, timeout=2.0, caFile=None, useQueue=True, rawQuery=False, rawResponse=False, customHeaders=[], useHTTPS=True):
-        url = baseurl
-        conn = cls.openDOHConnection(port, caFile=caFile, timeout=timeout)
-        response_headers = BytesIO()
-        #conn.setopt(pycurl.VERBOSE, True)
-        conn.setopt(pycurl.URL, url)
-        conn.setopt(pycurl.RESOLVE, ["%s:%d:127.0.0.1" % (servername, port)])
-        if useHTTPS:
-            conn.setopt(pycurl.SSL_VERIFYPEER, 1)
-            conn.setopt(pycurl.SSL_VERIFYHOST, 2)
-            if caFile:
-                conn.setopt(pycurl.CAINFO, caFile)
-
-        conn.setopt(pycurl.HTTPHEADER, customHeaders)
-        conn.setopt(pycurl.HEADERFUNCTION, response_headers.write)
-        conn.setopt(pycurl.POST, True)
-        data = query
-        if not rawQuery:
-            data = data.to_wire()
-
-        conn.setopt(pycurl.POSTFIELDS, data)
-
-        if response:
-            cls._toResponderQueue.put(response, True, timeout)
-
-        receivedQuery = None
-        message = None
-        cls._response_headers = ''
-        data = conn.perform_rb()
-        cls._rcode = conn.getinfo(pycurl.RESPONSE_CODE)
-        if cls._rcode == 200 and not rawResponse:
-            message = dns.message.from_wire(data)
-        elif rawResponse:
-            message = data
-
-        if useQueue and not cls._fromResponderQueue.empty():
-            receivedQuery = cls._fromResponderQueue.get(True, timeout)
-
-        cls._response_headers = response_headers.getvalue()
-        return (receivedQuery, message)
-
-    def getHeaderValue(self, name):
-        for header in self._response_headers.decode().splitlines(False):
-            values = header.split(':')
-            key = values[0]
-            if key.lower() == name.lower():
-                return values[1].strip()
-        return None
-
-    def checkHasHeader(self, name, value):
-        got = self.getHeaderValue(name)
-        self.assertEqual(got, value)
-
-    def checkNoHeader(self, name):
-        self.checkHasHeader(name, None)
-
-    @classmethod
-    def setUpClass(cls):
-
-        # for some reason, @unittest.skipIf() is not applied to derived classes with some versions of Python
-        if 'SKIP_DOH_TESTS' in os.environ:
-            raise unittest.SkipTest('DNS over HTTPS tests are disabled')
-
-        cls.startResponders()
-        cls.startDNSDist()
-        cls.setUpSockets()
-
-        print("Launching tests..")
 
 class TestDOH(DNSDistDOHTest):
 
@@ -991,6 +864,90 @@ class TestDOHWithCache(DNSDistDOHTest):
         self.assertTrue(receivedResponse)
         self.assertEqual(response, receivedResponse)
 
+    def testTruncation(self):
+        """
+        DOH: Truncation over UDP (with cache)
+        """
+        # the query is first forwarded over UDP, leading to a TC=1 answer from the
+        # backend, then over TCP
+        name = 'truncated-udp.doh-with-cache.tests.powerdns.com.'
+        query = dns.message.make_query(name, 'A', 'IN')
+        query.id = 42
+        expectedQuery = dns.message.make_query(name, 'A', 'IN', use_edns=True, payload=4096)
+        expectedQuery.id = 42
+        response = dns.message.make_response(query)
+        rrset = dns.rrset.from_text(name,
+                                    3600,
+                                    dns.rdataclass.IN,
+                                    dns.rdatatype.A,
+                                    '127.0.0.1')
+        response.answer.append(rrset)
+
+        # first response is a TC=1
+        tcResponse = dns.message.make_response(query)
+        tcResponse.flags |= dns.flags.TC
+        self._toResponderQueue.put(tcResponse, True, 2.0)
+
+        (receivedQuery, receivedResponse) = self.sendDOHQuery(self._dohServerPort, self._serverName, self._dohBaseURL, query, caFile=self._caCert, response=response)
+        # first query, received by dnsdist over UDP
+        self.assertTrue(receivedQuery)
+        receivedQuery.id = expectedQuery.id
+        self.assertEqual(expectedQuery, receivedQuery)
+        self.checkQueryEDNSWithoutECS(expectedQuery, receivedQuery)
+
+        # check the response
+        self.assertTrue(receivedResponse)
+        self.assertEqual(response, receivedResponse)
+
+        # check the second query, received by dnsdist over TCP
+        receivedQuery = self._fromResponderQueue.get(True, 2.0)
+        self.assertTrue(receivedQuery)
+        receivedQuery.id = expectedQuery.id
+        self.assertEqual(expectedQuery, receivedQuery)
+        self.checkQueryEDNSWithoutECS(expectedQuery, receivedQuery)
+
+        # now check the cache for a DoH query
+        (_, receivedResponse) = self.sendDOHQuery(self._dohServerPort, self._serverName, self._dohBaseURL, query, caFile=self._caCert, useQueue=False)
+        self.assertEqual(response, receivedResponse)
+
+        # The TC=1 answer received over UDP will not be cached, because we currently do not cache answers with no records (no TTL)
+        # The TCP one should, however
+        (_, receivedResponse) = self.sendTCPQuery(expectedQuery, response=None, useQueue=False)
+        self.assertEqual(response, receivedResponse)
+
+    def testResponsesReceivedOverUDP(self):
+        """
+        DOH: Check that responses received over UDP are cached (with cache)
+        """
+        name = 'cached-udp.doh-with-cache.tests.powerdns.com.'
+        query = dns.message.make_query(name, 'A', 'IN')
+        query.id = 0
+        expectedQuery = dns.message.make_query(name, 'A', 'IN', use_edns=True, payload=4096)
+        expectedQuery.id = 0
+        response = dns.message.make_response(query)
+        rrset = dns.rrset.from_text(name,
+                                    3600,
+                                    dns.rdataclass.IN,
+                                    dns.rdatatype.A,
+                                    '127.0.0.1')
+        response.answer.append(rrset)
+
+        (receivedQuery, receivedResponse) = self.sendDOHQuery(self._dohServerPort, self._serverName, self._dohBaseURL, query, caFile=self._caCert, response=response)
+        self.assertTrue(receivedQuery)
+        receivedQuery.id = expectedQuery.id
+        self.assertEqual(expectedQuery, receivedQuery)
+        self.checkQueryEDNSWithoutECS(expectedQuery, receivedQuery)
+        self.assertTrue(receivedResponse)
+        self.assertEqual(response, receivedResponse)
+
+        # now check the cache for a DoH query
+        (_, receivedResponse) = self.sendDOHQuery(self._dohServerPort, self._serverName, self._dohBaseURL, query, caFile=self._caCert, useQueue=False)
+        self.assertEqual(response, receivedResponse)
+
+        # Check that the answer is usable for UDP queries as well
+        (_, receivedResponse) = self.sendUDPQuery(expectedQuery, response=None, useQueue=False)
+        self.assertEqual(response, receivedResponse)
+
 class TestDOHWithoutCacheControl(DNSDistDOHTest):
 
     _serverKey = 'server.key'
@@ -1300,3 +1257,40 @@ class TestProtocols(DNSDistDOHTest):
         self.assertEqual(expectedQuery, receivedQuery)
         self.checkQueryEDNSWithoutECS(expectedQuery, receivedQuery)
         self.assertEqual(response, receivedResponse)
+
+class TestDOHWithPCKS12Cert(DNSDistDOHTest):
+    _serverCert = 'server.p12'
+    _pkcs12Password = 'passw0rd'
+    _serverName = 'tls.tests.dnsdist.org'
+    _caCert = 'ca.pem'
+    _dohServerPort = 8443
+    _dohBaseURL = ("https://%s:%d/" % (_serverName, _dohServerPort))
+    _config_template = """
+    newServer{address="127.0.0.1:%s"}
+    cert=newTLSCertificate("%s", {password="%s"})
+    addDOHLocal("127.0.0.1:%s", cert, "", { "/" })
+    """
+    _config_params = ['_testServerPort', '_serverCert', '_pkcs12Password', '_dohServerPort']
+
+    def testProtocolDOH(self):
+        """
+        DoH: Test Simple DOH Query with a password protected PCKS12 file configured
+        """
+        name = 'simple.doh.tests.powerdns.com.'
+        query = dns.message.make_query(name, 'A', 'IN', use_edns=False)
+        query.id = 0
+        expectedQuery = dns.message.make_query(name, 'A', 'IN', use_edns=True, payload=4096)
+        expectedQuery.id = 0
+        response = dns.message.make_response(query)
+        rrset = dns.rrset.from_text(name,
+                                    3600,
+                                    dns.rdataclass.IN,
+                                    dns.rdatatype.A,
+                                    '127.0.0.1')
+        response.answer.append(rrset)
+
+        (receivedQuery, receivedResponse) = self.sendDOHQuery(self._dohServerPort, self._serverName, self._dohBaseURL, query, response=response, caFile=self._caCert)
+        self.assertTrue(receivedQuery)
+        self.assertTrue(receivedResponse)
+        receivedQuery.id = expectedQuery.id
+        self.assertEqual(expectedQuery, receivedQuery)

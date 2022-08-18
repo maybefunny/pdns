@@ -31,8 +31,7 @@
 #include "dnspcap.hh"
 #include "dnsparser.hh"
 #include "dnsname.hh"
-#include <boost/tuple/tuple.hpp>
-#include <boost/tuple/tuple_comparison.hpp>
+#include <boost/format.hpp>
 #include <map>
 #include <set>
 #include <fstream>
@@ -224,8 +223,8 @@ try
     PcapPacketReader pr(files[fno]);
     std::unique_ptr<PcapPacketWriter> pw=nullptr;
     if(!g_vm["write-failures"].as<string>().empty())
-      pw=std::unique_ptr<PcapPacketWriter>(new PcapPacketWriter(g_vm["write-failures"].as<string>(), pr));
- 
+      pw = std::make_unique<PcapPacketWriter>(g_vm["write-failures"].as<string>(), pr);
+
     EDNSOpts edo;
     while(pr.getUDPPacket()) {
 
@@ -283,12 +282,11 @@ try
 	      lc.outstanding = liveQuestions(); 
 
 	      LiveCounts diff = lc - lastcounts;
-	      pcounts.push_back(make_pair(pr.d_pheader.ts.tv_sec, diff));
-
-	    }
-	    lastsec = pr.d_pheader.ts.tv_sec;
-	    lastcounts = lc;
-	  }
+              pcounts.emplace_back(pr.d_pheader.ts.tv_sec, diff);
+            }
+            lastsec = pr.d_pheader.ts.tv_sec;
+            lastcounts = lc;
+          }
 
     if(lowestTime) { lowestTime = min((time_t)lowestTime,  (time_t)pr.d_pheader.ts.tv_sec); }
     else { lowestTime = pr.d_pheader.ts.tv_sec; }

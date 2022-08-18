@@ -21,14 +21,33 @@
  */
 #pragma once
 
-#include "dnsname.hh"
+#include <cstdint>
+#include <time.h>
 
-void runTaskOnce(bool logErrors);
+class DNSName;
+union ComboAddress;
+
+namespace pdns
+{
+struct ResolveTask;
+}
+void runTasks(size_t max, bool logErrors);
+bool runTaskOnce(bool logErrors);
 void pushAlmostExpiredTask(const DNSName& qname, uint16_t qtype, time_t deadline);
+void pushResolveTask(const DNSName& qname, uint16_t qtype, time_t now, time_t deadline);
+bool pushTryDoTTask(const DNSName& qname, uint16_t qtype, const ComboAddress& ip, time_t deadline, const DNSName& nsname);
+void taskQueueClear();
+pdns::ResolveTask taskQueuePop();
+
 // General task stats
 uint64_t getTaskPushes();
 uint64_t getTaskExpired();
 uint64_t getTaskSize();
+
+// Resolve specific stats
+uint64_t getResolveTasksPushed();
+uint64_t getResolveTasksRun();
+uint64_t getResolveTaskExceptions();
 
 // Almost expired specific stats
 uint64_t getAlmostExpiredTasksPushed();

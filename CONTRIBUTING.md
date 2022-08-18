@@ -14,8 +14,7 @@ If there is no similar issue, feature request or you're not sure, open a new
 issue.
 
 ## Filing a Feature Request
-When filing a feature request, please start your issue title with "Feature request:",
-this allows for quick distinguishing between issues and these requests.
+When filing a feature request, please use the Feature request template provided.
 
 Please be as elaborate as possible when describing the feature you need. Provide
 at least the following information (if they are relevant):
@@ -40,12 +39,14 @@ information:
 * Observed behavior: what actually happened when following the steps?
 * Relevant logs: Please use code blocks (\`\`\`) to format console output, logs, and code as it's very hard to read otherwise.
 
+We provide convenient templates that make it easy to not forget any of these steps.
+
 If you have already looked deeper into the problem, provide what you found as
 well.
 
 # Filing a Pull Request
 Code contributions are sent as a pull request on [GitHub](https://github.com/PowerDNS/pdns/pulls).
-By submitting a Pull Request you agree to your code become GPLv2 licensed.
+By submitting a Pull Request you agree to your code becoming GPLv2 licensed.
 
 ## Pull Request Guidelines
 A pull request, at the least, should have:
@@ -57,12 +58,13 @@ A pull request, at the least, should have:
 
 And must:
 * Be filed against the master branch before any release branch
-* Pass all tests in Travis
+* Pass all tests in our CI (currently Github Actions and CircleCI)
 
 Information on the tests can be found in the repository at
 [/regression-tests/README.md](https://github.com/PowerDNS/pdns/blob/master/regression-tests/README.md)
-and
-[/regression-tests.recursor/README.md](https://github.com/PowerDNS/pdns/blob/master/regression-tests.recursor/README.md).
+,
+[/regression-tests.recursor/README.md](https://github.com/PowerDNS/pdns/blob/master/regression-tests.recursor/README.md),
+plus various other directories with `regression-tests.*` names.
 
 ## Commit Guidelines
 * Tell why the change does what it does, not how it does it.
@@ -72,10 +74,63 @@ and
 * Do not put whitespace fixes/cleanup and functionality changes in the same commit
 
 # Coding Guidelines
-At the moment there is no established coding guideline, but here are some
-general guidelines:
+
+## `clang-format`
+
+We have `clang-format` in place, but not for all files yet.
+This is an incremental process.
+If you're adding new code, adhering to the formatting config is appreciated.
+Formatting breakage in already formatted files will be caught by the CI.
+To format all files that are supposed to be formatted, run `make format-code` in the root of the tree.
+
+## Additional guidelines
 
 * Don't have end-of-line whitespace
 * Use spaces instead of tabs
-* Stick to the style of the file you're editing
-* Functions and classes must have a [docblock](http://www.stack.nl/~dimitri/doxygen/manual/docblocks.html)
+* Although the codebase does not consistently have them, [docblock](https://www.doxygen.nl/manual/docblocks.html)s on functions and classes are appreciated
+* Never hesitate to write comments on anything that might not be immediately clear just from reading the code
+* When adding whole new things, consider putting them in a `pdns::X` namespace. Look for `namespace pdns` in the codebase for examples.
+
+## Code Checkers
+
+Even though we don't automatically run any of the code checkers listed below as part of our CI, it might make sense to run them manually, not only on newly added code, but to also improve existing code.
+
+### `clang-tidy`
+
+`clang-tidy` requires a [compilation database](https://clang.llvm.org/docs/JSONCompilationDatabase.html) to work.
+See the ["Compilation Database" section of the DEVELOPMENT document](DEVELOPMENT.md#compilation-database) on how to generate a compilation database.
+
+Once the compilation database has been generated, you can pick one of the two available `clang-tidy` configuration files to run checks on source files.
+Picking a configuration file is a matter of creating a symbolic link called `.clang-tidy` to said file in the topmost level of the sub-project you're working on (or the toplevel repository directory if you're working on PowerDNS auth).
+
+We provide two configuration files for `clang-tidy`:
+
+1. A minimal [.clang-tidy.bugs](.clang-tidy.bugs) which only enables a few checks for common bugs.
+   This configuration can be enabled using `ln -sf .clang-tidy.bugs .clang-tidy`.
+
+2. A more complete [.clang-tidy.full](.clang-tidy.full) which enables almost all available checks.
+   This configuration can be enabled using `ln -sf .clang-tidy.full .clang-tidy` and is recommended for all new code.
+
+# Development Environment
+
+Information about setting up a development environment using a language server like [`clangd`](https://clangd.llvm.org/) or [`ccls`](https://github.com/MaskRay/ccls) can be found in [DEVELOPMENT.md](DEVELOPMENT.md).
+
+# Debugging
+
+## Using GDB
+
+To get a good debugging experience with `gdb`, it is recommended to build PowerDNS using the following flags:
+
+* `CC` and `CXX` set to `gcc` and `g++`, respectively.
+* `CFLAGS` and `CXXFLAGS` set to `-ggdb -Og -fno-inline`.
+
+These variables need to be set during the `configure` step, as follows:
+
+```sh
+export CC=clang CXX=clang++
+export CFLAGS="-ggdb -Og -fno-inline" CXXFLAGS="-ggdb -Og -fno-inline"
+./configure --with-modules=gsqlite3 --disable-lua-records --enable-unit-tests
+make -j 8
+```
+
+[GDB Dashboard](https://github.com/cyrus-and/gdb-dashboard) can be used to vastly improve the GDB debugging experience.

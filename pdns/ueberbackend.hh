@@ -31,6 +31,7 @@
 
 #include "dnspacket.hh"
 #include "dnsbackend.hh"
+#include "lock.hh"
 #include "namespaces.hh"
 
 /** This is a very magic backend that allows us to load modules dynamically,
@@ -48,13 +49,14 @@ public:
 
   bool superMasterBackend(const string &ip, const DNSName &domain, const vector<DNSResourceRecord>&nsset, string *nameserver, string *account, DNSBackend **db);
 
-  bool superMasterAdd(const string &ip, const string &nameserver, const string &account); 
+  bool superMasterAdd(const AutoPrimary &primary);
+  bool autoPrimaryRemove(const struct AutoPrimary& primary);
+  bool autoPrimariesList(std::vector<AutoPrimary>& primaries);
 
   /** Tracks all created UeberBackend instances for us. We use this vector to notify
       existing threads of new modules 
   */
-  static vector<UeberBackend *>instances;
-  static std::mutex instances_lock;
+  static LockGuarded<vector<UeberBackend *>> d_instances;
 
   static bool loadmodule(const string &name);
   static bool loadModules(const vector<string>& modules, const string& path);
@@ -101,10 +103,10 @@ public:
   /** Load SOA info from backends, ignoring the cache.*/
   bool getSOAUncached(const DNSName &domain, SOAData &sd);
   bool get(DNSZoneRecord &r);
-  void getAllDomains(vector<DomainInfo> *domains, bool include_disabled=false);
+  void getAllDomains(vector<DomainInfo>* domains, bool getSerial, bool include_disabled);
 
   void getUnfreshSlaveInfos(vector<DomainInfo>* domains);
-  void getUpdatedMasters(vector<DomainInfo>* domains);
+  void getUpdatedMasters(vector<DomainInfo>& domains, std::unordered_set<DNSName>& catalogs, CatalogHashMap& catalogHashes);
   bool getDomainInfo(const DNSName &domain, DomainInfo &di, bool getSerial=true);
   bool createDomain(const DNSName &domain, const DomainInfo::DomainKind kind, const vector<ComboAddress> &masters, const string &account);
   
@@ -113,7 +115,9 @@ public:
   bool getDomainKeys(const DNSName& name, std::vector<DNSBackend::KeyData>& keys);
   bool getAllDomainMetadata(const DNSName& name, std::map<std::string, std::vector<std::string> >& meta);
   bool getDomainMetadata(const DNSName& name, const std::string& kind, std::vector<std::string>& meta);
+  bool getDomainMetadata(const DNSName& name, const std::string& kind, std::string& meta);
   bool setDomainMetadata(const DNSName& name, const std::string& kind, const std::vector<std::string>& meta);
+  bool setDomainMetadata(const DNSName& name, const std::string& kind, const std::string& meta);
 
   bool removeDomainKey(const DNSName& name, unsigned int id);
   bool activateDomainKey(const DNSName& name, unsigned int id);
@@ -121,20 +125,22 @@ public:
   bool publishDomainKey(const DNSName& name, unsigned int id);
   bool unpublishDomainKey(const DNSName& name, unsigned int id);
 
-  bool getTSIGKey(const DNSName& name, DNSName* algorithm, string* content);
-  bool setTSIGKey(const DNSName& name, const DNSName& algorithm, const string& content);
-  bool deleteTSIGKey(const DNSName& name);
-  bool getTSIGKeys(std::vector< struct TSIGKey > &keys);
-
   void alsoNotifies(const DNSName &domain, set<string> *ips); 
   void rediscover(string* status=0);
   void reload();
+
+  bool setTSIGKey(const DNSName& name, const DNSName& algorithm, const string& content);
+  bool getTSIGKey(const DNSName& name, DNSName& algorithm, string& content);
+  bool getTSIGKeys(std::vector<struct TSIGKey>& keys);
+  bool deleteTSIGKey(const DNSName& name);
+
   bool searchRecords(const string &pattern, int maxResults, vector<DNSResourceRecord>& result);
   bool searchComments(const string &pattern, int maxResults, vector<Comment>& result);
 
   void updateZoneCache();
 
   bool inTransaction();
+
 private:
   handle d_handle;
   vector<DNSZoneRecord> d_answers;

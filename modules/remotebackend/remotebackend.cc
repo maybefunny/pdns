@@ -165,20 +165,20 @@ int RemoteBackend::build()
 
   // connectors know what they are doing
   if (type == "unix") {
-    this->connector = std::unique_ptr<Connector>(new UnixsocketConnector(options));
+    this->connector = std::make_unique<UnixsocketConnector>(options);
   }
   else if (type == "http") {
-    this->connector = std::unique_ptr<Connector>(new HTTPConnector(options));
+    this->connector = std::make_unique<HTTPConnector>(options);
   }
   else if (type == "zeromq") {
 #ifdef REMOTEBACKEND_ZEROMQ
-    this->connector = std::unique_ptr<Connector>(new ZeroMQConnector(options));
+    this->connector = std::make_unique<ZeroMQConnector>(options);
 #else
     throw PDNSException("Invalid connection string: zeromq connector support not enabled. Recompile with --enable-remotebackend-zeromq");
 #endif
   }
   else if (type == "pipe") {
-    this->connector = std::unique_ptr<Connector>(new PipeConnector(options));
+    this->connector = std::make_unique<PipeConnector>(options);
   }
   else {
     throw PDNSException("Invalid connection string: unknown connector");
@@ -203,7 +203,7 @@ void RemoteBackend::lookup(const QType& qtype, const DNSName& qdomain, int zoneI
   if (pkt_p) {
     localIP = pkt_p->getLocal().toString();
     realRemote = pkt_p->getRealRemote().toString();
-    remoteIP = pkt_p->getRemote().toString();
+    remoteIP = pkt_p->getInnerRemote().toString();
   }
 
   Json query = Json::object{
@@ -496,7 +496,7 @@ bool RemoteBackend::doesDNSSEC()
   return d_dnssec;
 }
 
-bool RemoteBackend::getTSIGKey(const DNSName& name, DNSName* algorithm, std::string* content)
+bool RemoteBackend::getTSIGKey(const DNSName& name, DNSName& algorithm, std::string& content)
 {
   // no point doing dnssec if it's not supported
   if (d_dnssec == false)
@@ -510,8 +510,8 @@ bool RemoteBackend::getTSIGKey(const DNSName& name, DNSName* algorithm, std::str
   if (this->send(query) == false || this->recv(answer) == false)
     return false;
 
-  (*algorithm) = DNSName(stringFromJson(answer["result"], "algorithm"));
-  (*content) = stringFromJson(answer["result"], "content");
+  algorithm = DNSName(stringFromJson(answer["result"], "algorithm"));
+  content = stringFromJson(answer["result"], "content");
 
   return true;
 }
@@ -858,7 +858,7 @@ bool RemoteBackend::searchComments(const string& pattern, int maxResults, vector
   return false;
 }
 
-void RemoteBackend::getAllDomains(vector<DomainInfo>* domains, bool include_disabled)
+void RemoteBackend::getAllDomains(vector<DomainInfo>* domains, bool getSerial, bool include_disabled)
 {
   Json query = Json::object{
     {"method", "getAllDomains"},
@@ -885,7 +885,7 @@ void RemoteBackend::alsoNotifies(const DNSName& domain, set<string>* ips)
   ips->insert(meta.begin(), meta.end());
 }
 
-void RemoteBackend::getUpdatedMasters(vector<DomainInfo>* domains)
+void RemoteBackend::getUpdatedMasters(vector<DomainInfo>& domains, std::unordered_set<DNSName>& catalogs, CatalogHashMap& catalogHashes)
 {
   Json query = Json::object{
     {"method", "getUpdatedMasters"},
@@ -902,7 +902,7 @@ void RemoteBackend::getUpdatedMasters(vector<DomainInfo>* domains)
   for (const auto& row : answer["result"].array_items()) {
     DomainInfo di;
     this->parseDomainInfo(row, di);
-    domains->push_back(di);
+    domains.push_back(di);
   }
 }
 

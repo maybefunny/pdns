@@ -20,9 +20,9 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
-#include "config.h"
+#include "dnsdist-secpoll.hh"
+#ifndef DISABLE_SECPOLL
 
-#include <string>
 #include <vector>
 
 #ifdef HAVE_LIBSODIUM
@@ -36,7 +36,7 @@
 #include "sstuff.hh"
 
 #include "dnsdist.hh"
-#include "dnsdist-secpoll.hh"
+#include "dnsdist-random.hh"
 
 #ifndef PACKAGEVERSION
 #define PACKAGEVERSION PACKAGE_VERSION
@@ -90,10 +90,10 @@ static std::string getFirstTXTAnswer(const std::string& answer)
 
 static std::string getSecPollStatus(const std::string& queriedName, int timeout=2)
 {
-  const DNSName& sentName = DNSName(queriedName);
+  const DNSName sentName(queriedName);
   std::vector<uint8_t> packet;
   DNSPacketWriter pw(packet, sentName, QType::TXT);
-  pw.getHeader()->id = getRandomDNSID();
+  pw.getHeader()->id = dnsdist::getRandomDNSID();
   pw.getHeader()->rd = 1;
 
   const auto& resolversForStub = getResolvers("/etc/resolv.conf");
@@ -244,3 +244,5 @@ void doSecPoll(const std::string& suffix)
     g_secPollDone = true;
   }
 }
+
+#endif /* DISABLE_SECPOLL */

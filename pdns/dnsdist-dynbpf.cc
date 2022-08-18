@@ -38,7 +38,7 @@ bool DynBPFFilter::block(const ComboAddress& addr, const struct timespec& until)
     }
   }
   else {
-    data->d_bpf->block(addr);
+    data->d_bpf->block(addr, BPFFilter::MatchAction::Drop);
     data->d_entries.insert(BlockEntry(addr, until));
     inserted = true;
   }
@@ -49,8 +49,8 @@ void DynBPFFilter::purgeExpired(const struct timespec& now)
 {
   auto data = d_data.lock();
 
-  typedef nth_index<container_t,1>::type ordered_until;
-  ordered_until& ou = get<1>(data->d_entries);
+  typedef boost::multi_index::nth_index<container_t,1>::type ordered_until;
+  ordered_until& ou = boost::multi_index::get<1>(data->d_entries);
 
   for (ordered_until::iterator it = ou.begin(); it != ou.end(); ) {
     if (it->d_until < now) {

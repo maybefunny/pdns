@@ -49,6 +49,9 @@ In addition to the drawback that it can only pass the source IP address, and the
 X-Proxied-For
 -------------
 
+.. note::
+  This is a deprecated feature that will be removed in the near future.
+
 The experimental XPF record (from `draft-bellis-dnsop-xpf <https://datatracker.ietf.org/doc/draft-bellis-dnsop-xpf/>`_) is an alternative to the use of EDNS Client Subnet which has the advantages of preserving any existing EDNS Client Subnet value sent by the client, and of passing along the original destination address, as well as the initial source and destination ports.
 
 In order to provide the downstream server with the address of the real client, or at least the one talking to dnsdist, the ``addXPF`` parameter can be used when creating a :func:`new server <newServer>`.
@@ -76,6 +79,8 @@ That means that values received on an incoming TCP connection will be inherited 
 Please also note that the maximum size of a Proxy Protocol header dnsdist is willing to accept is 512 bytes by default, although it can be set via :func:`setProxyProtocolMaximumPayloadSize`.
 
 dnsdist 1.5.0 only supports outgoing Proxy Protocol. Support for parsing incoming Proxy Protocol headers has been implemented in 1.6.0, except for DoH where it does not make sense anyway, since HTTP headers already provide a mechanism for that.
+
+Both the PowerDNS Authoritative Server and the Recursor can parse PROXYv2 headers, if configured to do so with their `proxy-protocol-from` setting.
 
 Influence on caching
 --------------------

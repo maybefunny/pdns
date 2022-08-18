@@ -1,70 +1,19 @@
 #pragma once
 
-#include <queue>
-
 #include "sstuff.hh"
 #include "tcpiohandler-mplexer.hh"
 #include "dnsdist.hh"
+#include "dnsdist-tcp.hh"
 
-struct TCPQuery
-{
-  TCPQuery()
-  {
-  }
-
-  TCPQuery(PacketBuffer&& buffer, IDState&& state): d_idstate(std::move(state)), d_buffer(std::move(buffer))
-  {
-  }
-
-  IDState d_idstate;
-  PacketBuffer d_buffer;
-  std::string d_proxyProtocolPayload;
-  bool d_proxyProtocolPayloadAdded{false};
-};
-
-class TCPConnectionToBackend;
-
-struct TCPResponse : public TCPQuery
-{
-  TCPResponse()
-  {
-    /* let's make Coverity happy */
-    memset(&d_cleartextDH, 0, sizeof(d_cleartextDH));
-  }
-
-  TCPResponse(PacketBuffer&& buffer, IDState&& state, std::shared_ptr<TCPConnectionToBackend> conn): TCPQuery(std::move(buffer), std::move(state)), d_connection(conn)
-  {
-    memset(&d_cleartextDH, 0, sizeof(d_cleartextDH));
-  }
-
-  std::shared_ptr<TCPConnectionToBackend> d_connection{nullptr};
-  dnsheader d_cleartextDH;
-  bool d_selfGenerated{false};
-};
-
-class IncomingTCPConnectionState;
-
-class TCPConnectionToBackend
+class ConnectionToBackend : public std::enable_shared_from_this<ConnectionToBackend>
 {
 public:
-  TCPConnectionToBackend(std::shared_ptr<DownstreamState>& ds, const struct timeval& now): d_responseBuffer(s_maxPacketCacheEntrySize), d_ds(ds), d_connectionStartTime(now), d_lastDataReceivedTime(now), d_enableFastOpen(ds->tcpFastOpen)
+  ConnectionToBackend(const std::shared_ptr<DownstreamState>& ds, std::unique_ptr<FDMultiplexer>& mplexer, const struct timeval& now): d_connectionStartTime(now), d_lastDataReceivedTime(now), d_ds(ds), d_mplexer(mplexer), d_enableFastOpen(ds->d_config.tcpFastOpen)
   {
     reconnect();
   }
 
-  ~TCPConnectionToBackend()
-  {
-    if (d_ds && d_handler) {
-      --d_ds->tcpCurrentConnections;
-      struct timeval now;
-      gettimeofday(&now, nullptr);
-
-      auto diff = now - d_connectionStartTime;
-      d_ds->updateTCPMetrics(d_queries, diff.tv_sec * 1000 + diff.tv_usec / 1000);
-    }
-  }
-
-  void assignToClientConnection(std::shared_ptr<IncomingTCPConnectionState>& clientConn, bool isXFR);
+  virtual ~ConnectionToBackend();
 
   int getHandle() const
   {
@@ -75,6 +24,22 @@ public:
     return d_handler->getDescriptor();
   }
 
+  /* whether the underlying socket has been closed under our feet, basically */
+  bool isUsable()
+  {
+    if (!d_handler) {
+      d_connectionDied = true;
+      return false;
+    }
+
+    if (d_handler->isUsable()) {
+      return true;
+    }
+
+    d_connectionDied = true;
+    return false;
+  }
+
   const std::shared_ptr<DownstreamState>& getDS() const
   {
     return d_ds;
@@ -82,7 +47,7 @@ public:
 
   const ComboAddress& getRemote() const
   {
-    return d_ds->remote;
+    return d_ds->d_config.remote;
   }
 
   const std::string& getBackendName() const
@@ -93,11 +58,6 @@ public:
   bool isFresh() const
   {
     return d_fresh;
-  }
-
-  void incQueries()
-  {
-    ++d_queries;
   }
 
   void setReused()
@@ -115,45 +75,54 @@ public:
     return d_enableFastOpen;
   }
 
-  /* whether we can accept new queries FOR THE SAME CLIENT */
-  bool canAcceptNewQueries() const
+  /* whether a connection can be used now */
+  bool canBeReused(bool sameClient = false) const
   {
-    if (d_usedForXFR || d_connectionDied) {
-      return false;
-      /* Don't reuse the TCP connection after an {A,I}XFR */
-      /* but don't reset it either, we will need to read more messages */
-    }
-
-    if ((d_pendingQueries.size() + d_pendingResponses.size()) >= d_ds->d_maxInFlightQueriesPerConn) {
+    if (d_connectionDied) {
       return false;
     }
 
-    return true;
-  }
-
-  bool isIdle() const
-  {
-    return d_state == State::idle && d_pendingQueries.size() == 0 && d_pendingResponses.size() == 0;
-  }
-
-  /* whether a connection can be reused for a different client */
-  bool canBeReused() const
-  {
-    if (d_usedForXFR || d_connectionDied) {
-      return false;
-    }
     /* we can't reuse a connection where a proxy protocol payload has been sent,
        since:
        - it cannot be reused for a different client
        - we might have different TLV values for each query
     */
-    if (d_ds && d_ds->useProxyProtocol == true) {
+    if (d_ds && d_ds->d_config.useProxyProtocol == true && !sameClient) {
       return false;
     }
+
+    if (reachedMaxStreamID()) {
+      return false;
+    }
+
+    if (reachedMaxConcurrentQueries()) {
+      return false;
+    }
+
     return true;
   }
 
-  bool matchesTLVs(const std::unique_ptr<std::vector<ProxyProtocolValue>>& tlvs) const;
+  /* full now but will become usable later */
+  bool willBeReusable(bool sameClient) const
+  {
+    if (d_connectionDied || reachedMaxStreamID()) {
+      return false;
+    }
+
+    if (d_ds && d_ds->d_config.useProxyProtocol == true) {
+      return sameClient;
+    }
+
+    return true;
+  }
+
+  virtual bool reachedMaxStreamID() const = 0;
+  virtual bool reachedMaxConcurrentQueries() const = 0;
+  virtual bool isIdle() const = 0;
+  virtual void release() = 0;
+  virtual void stopIO()
+  {
+  }
 
   bool matches(const std::shared_ptr<DownstreamState>& ds) const
   {
@@ -163,43 +132,33 @@ public:
     return ds == d_ds;
   }
 
-  void queueQuery(TCPQuery&& query, std::shared_ptr<TCPConnectionToBackend>& sharedSelf);
-  void handleTimeout(const struct timeval& now, bool write);
-  void release();
-
-  void setProxyProtocolValuesSent(std::unique_ptr<std::vector<ProxyProtocolValue>>&& proxyProtocolValuesSent);
+  virtual void queueQuery(std::shared_ptr<TCPQuerySender>& sender, TCPQuery&& query) = 0;
+  virtual void handleTimeout(const struct timeval& now, bool write) = 0;
 
   struct timeval getLastDataReceivedTime() const
   {
     return d_lastDataReceivedTime;
   }
 
-  std::string toString() const
-  {
-    ostringstream o;
-    o << "TCP connection to backend "<<(d_ds ? d_ds->getName() : "empty")<<" over FD "<<(d_handler ? std::to_string(d_handler->getDescriptor()) : "no socket")<<", state is "<<(int)d_state<<", io state is "<<(d_ioState ? std::to_string((int)d_ioState->getState()) : "empty")<<", queries count is "<<d_queries<<", pending queries count is "<<d_pendingQueries.size()<<", "<<d_pendingResponses.size()<<" pending responses, linked to "<<(d_clientConn ? " a client" : "no client");
-    return o.str();
-  }
+  virtual std::string toString() const = 0;
 
-private:
-  /* waitingForResponseFromBackend is a state where we have not yet started reading the size,
-     so we can still switch to sending instead */
-  enum class State : uint8_t { idle, doingHandshake, sendingQueryToBackend, waitingForResponseFromBackend, readingResponseSizeFromBackend, readingResponseFromBackend };
-  enum class FailureReason : uint8_t { /* too many attempts */ gaveUp, timeout, unexpectedQueryID };
-
-  static void handleIO(std::shared_ptr<TCPConnectionToBackend>& conn, const struct timeval& now);
-  static void handleIOCallback(int fd, FDMultiplexer::funcparam_t& param);
-  static IOState queueNextQuery(std::shared_ptr<TCPConnectionToBackend>& conn);
-  static IOState sendQuery(std::shared_ptr<TCPConnectionToBackend>& conn, const struct timeval& now);
-  static bool isXFRFinished(const TCPResponse& response, const shared_ptr<IncomingTCPConnectionState>& clientConn);
-
-  IOState handleResponse(std::shared_ptr<TCPConnectionToBackend>& conn, const struct timeval& now);
-  uint16_t getQueryIdFromResponse();
+protected:
   bool reconnect();
-  void notifyAllQueriesFailed(const struct timeval& now, FailureReason reason);
-  bool needProxyProtocolPayload() const
+
+  boost::optional<struct timeval> getBackendHealthCheckTTD(const struct timeval& now) const
   {
-    return !d_proxyProtocolPayloadSent && (d_ds && d_ds->useProxyProtocol);
+    if (d_ds == nullptr) {
+      throw std::runtime_error("getBackendReadTTD() without any backend selected");
+    }
+    if (d_ds->d_config.checkTimeout == 0) {
+      return boost::none;
+    }
+
+    struct timeval res = now;
+    res.tv_sec += d_ds->d_config.checkTimeout / 1000; /* ms to s */
+    res.tv_usec += (d_ds->d_config.checkTimeout % 1000) / 1000; /* remaining ms to µs */
+
+    return res;
   }
 
   boost::optional<struct timeval> getBackendReadTTD(const struct timeval& now) const
@@ -207,12 +166,12 @@ private:
     if (d_ds == nullptr) {
       throw std::runtime_error("getBackendReadTTD() without any backend selected");
     }
-    if (d_ds->tcpRecvTimeout == 0) {
+    if (d_ds->d_config.tcpRecvTimeout == 0) {
       return boost::none;
     }
 
     struct timeval res = now;
-    res.tv_sec += d_ds->tcpRecvTimeout;
+    res.tv_sec += d_ds->d_config.tcpRecvTimeout;
 
     return res;
   }
@@ -222,12 +181,12 @@ private:
     if (d_ds == nullptr) {
       throw std::runtime_error("getBackendWriteTTD() called without any backend selected");
     }
-    if (d_ds->tcpSendTimeout == 0) {
+    if (d_ds->d_config.tcpSendTimeout == 0) {
       return boost::none;
     }
 
     struct timeval res = now;
-    res.tv_sec += d_ds->tcpSendTimeout;
+    res.tv_sec += d_ds->d_config.tcpSendTimeout;
 
     return res;
   }
@@ -237,37 +196,113 @@ private:
     if (d_ds == nullptr) {
       throw std::runtime_error("getBackendConnectTTD() called without any backend selected");
     }
-    if (d_ds->tcpConnectTimeout == 0) {
+    if (d_ds->d_config.tcpConnectTimeout == 0) {
       return boost::none;
     }
 
     struct timeval res = now;
-    res.tv_sec += d_ds->tcpConnectTimeout;
+    res.tv_sec += d_ds->d_config.tcpConnectTimeout;
 
     return res;
   }
 
-  static const uint16_t s_xfrID;
-
-  PacketBuffer d_responseBuffer;
-  std::deque<TCPQuery> d_pendingQueries;
-  std::unordered_map<uint16_t, TCPQuery> d_pendingResponses;
-  std::unique_ptr<std::vector<ProxyProtocolValue>> d_proxyProtocolValuesSent{nullptr};
-  std::unique_ptr<TCPIOHandler> d_handler{nullptr};
-  std::unique_ptr<IOStateHandler> d_ioState{nullptr};
-  std::shared_ptr<DownstreamState> d_ds{nullptr};
-  std::shared_ptr<IncomingTCPConnectionState> d_clientConn;
-  TCPQuery d_currentQuery;
   struct timeval d_connectionStartTime;
   struct timeval d_lastDataReceivedTime;
-  size_t d_currentPos{0};
+  const std::shared_ptr<DownstreamState> d_ds{nullptr};
+  std::shared_ptr<TCPQuerySender> d_sender{nullptr};
+  std::unique_ptr<FDMultiplexer>& d_mplexer;
+  std::unique_ptr<TCPIOHandler> d_handler{nullptr};
+  std::unique_ptr<IOStateHandler> d_ioState{nullptr};
   uint64_t d_queries{0};
-  uint64_t d_downstreamFailures{0};
-  uint16_t d_responseSize{0};
-  State d_state{State::idle};
-  bool d_fresh{true};
+  uint32_t d_highestStreamID{0};
+  uint16_t d_downstreamFailures{0};
+  bool d_proxyProtocolPayloadSent{false};
   bool d_enableFastOpen{false};
   bool d_connectionDied{false};
-  bool d_usedForXFR{false};
-  bool d_proxyProtocolPayloadSent{false};
+  bool d_fresh{true};
 };
+
+class TCPConnectionToBackend : public ConnectionToBackend
+{
+public:
+  TCPConnectionToBackend(const std::shared_ptr<DownstreamState>& ds, std::unique_ptr<FDMultiplexer>& mplexer, const struct timeval& now, std::string&& /* proxyProtocolPayload*, unused but there to match the HTTP2 connections, so we can use the same templated connections manager class */): ConnectionToBackend(ds, mplexer, now), d_responseBuffer(s_maxPacketCacheEntrySize)
+  {
+  }
+
+  virtual ~TCPConnectionToBackend();
+
+  bool isIdle() const override
+  {
+    return d_state == State::idle && d_pendingQueries.size() == 0 && d_pendingResponses.size() == 0;
+  }
+
+  bool reachedMaxStreamID() const override
+  {
+    /* TCP/DoT has only 2^16 usable identifiers, DoH has 2^32 */
+    const uint32_t maximumStreamID = std::numeric_limits<uint16_t>::max() - 1;
+    return d_highestStreamID == maximumStreamID;
+  }
+
+  bool reachedMaxConcurrentQueries() const override
+  {
+    const size_t concurrent = d_pendingQueries.size() + d_pendingResponses.size() + (d_state == State::sendingQueryToBackend ? 1 : 0);
+    if (concurrent > 0 && concurrent >= d_ds->d_config.d_maxInFlightQueriesPerConn) {
+      return true;
+    }
+    return false;
+  }
+  bool matchesTLVs(const std::unique_ptr<std::vector<ProxyProtocolValue>>& tlvs) const;
+
+  void queueQuery(std::shared_ptr<TCPQuerySender>& sender, TCPQuery&& query) override;
+  void handleTimeout(const struct timeval& now, bool write) override;
+  void release() override;
+
+  std::string toString() const override
+  {
+    ostringstream o;
+    o << "TCP connection to backend "<<(d_ds ? d_ds->getName() : "empty")<<" over FD "<<(d_handler ? std::to_string(d_handler->getDescriptor()) : "no socket")<<", state is "<<(int)d_state<<", io state is "<<(d_ioState ? d_ioState->getState() : "empty")<<", queries count is "<<d_queries<<", pending queries count is "<<d_pendingQueries.size()<<", "<<d_pendingResponses.size()<<" pending responses";
+    return o.str();
+  }
+
+  void setProxyProtocolValuesSent(std::unique_ptr<std::vector<ProxyProtocolValue>>&& proxyProtocolValuesSent);
+
+private:
+  /* waitingForResponseFromBackend is a state where we have not yet started reading the size,
+     so we can still switch to sending instead */
+  enum class State : uint8_t { idle, sendingQueryToBackend, waitingForResponseFromBackend, readingResponseSizeFromBackend, readingResponseFromBackend };
+  enum class FailureReason : uint8_t { /* too many attempts */ gaveUp, timeout, unexpectedQueryID };
+
+  static void handleIO(std::shared_ptr<TCPConnectionToBackend>& conn, const struct timeval& now);
+  static void handleIOCallback(int fd, FDMultiplexer::funcparam_t& param);
+  static IOState queueNextQuery(std::shared_ptr<TCPConnectionToBackend>& conn);
+  static IOState sendQuery(std::shared_ptr<TCPConnectionToBackend>& conn, const struct timeval& now);
+  static bool isXFRFinished(const TCPResponse& response, TCPQuery& query);
+
+  IOState handleResponse(std::shared_ptr<TCPConnectionToBackend>& conn, const struct timeval& now);
+  uint16_t getQueryIdFromResponse() const;
+  void notifyAllQueriesFailed(const struct timeval& now, FailureReason reason);
+  bool needProxyProtocolPayload() const
+  {
+    return !d_proxyProtocolPayloadSent && (d_ds && d_ds->d_config.useProxyProtocol);
+  }
+
+  class PendingRequest
+  {
+  public:
+    std::shared_ptr<TCPQuerySender> d_sender{nullptr};
+    TCPQuery d_query;
+  };
+
+  PacketBuffer d_responseBuffer;
+  std::list<PendingRequest> d_pendingQueries;
+  std::unordered_map<uint16_t, PendingRequest> d_pendingResponses;
+  std::unique_ptr<std::vector<ProxyProtocolValue>> d_proxyProtocolValuesSent{nullptr};
+  PendingRequest d_currentQuery;
+  size_t d_currentPos{0};
+  uint16_t d_responseSize{0};
+  State d_state{State::idle};
+};
+
+void setTCPDownstreamMaxIdleConnectionsPerBackend(uint64_t max);
+void setTCPDownstreamCleanupInterval(uint64_t interval);
+void setTCPDownstreamMaxIdleTime(uint64_t max);

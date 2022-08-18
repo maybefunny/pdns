@@ -33,9 +33,8 @@
 #include "statbag.hh"
 extern StatBag S;
 
-static ReadWriteLock g_signatures_lock;
 typedef map<pair<string, string>, string> signaturecache_t;
-static signaturecache_t g_signatures;
+static SharedLockGuarded<signaturecache_t> g_signatures;
 static int g_cacheweekno;
 
 const static std::set<uint16_t> g_KSKSignedQTypes {QType::DNSKEY, QType::CDS, QType::CDNSKEY};
@@ -44,10 +43,10 @@ AtomicCounter* g_signatureCount;
 static std::string getLookupKey(const std::string& msg)
 {
   try {
-    return pdns_md5sum(msg);
+    return pdns_md5(msg);
   }
   catch(const std::runtime_error& e) {
-    return pdns_sha1sum(msg);
+    return pdns_sha1(msg);
   }
 }
 
@@ -67,9 +66,9 @@ static void fillOutRRSIG(DNSSECPrivateKey& dpk, const DNSName& signQName, RRSIGR
   bool doCache=true;
   if(doCache)
   {
-    ReadLock l(&g_signatures_lock);
-    signaturecache_t::const_iterator iter = g_signatures.find(lookup);
-    if(iter != g_signatures.end()) {
+    auto signatures = g_signatures.read_lock();
+    signaturecache_t::const_iterator iter = signatures->find(lookup);
+    if (iter != signatures->end()) {
       rrc.d_signature=iter->second;
       return;
     }
@@ -83,13 +82,13 @@ static void fillOutRRSIG(DNSSECPrivateKey& dpk, const DNSName& signQName, RRSIGR
     int weekno = (time(nullptr) - dns_random(3600)) / (86400*7);  // we just spent milliseconds doing a signature, microsecond more won't kill us
     const static int maxcachesize=::arg().asNum("max-signature-cache-entries", INT_MAX);
 
-    WriteLock l(&g_signatures_lock);
-    if(g_cacheweekno < weekno || g_signatures.size() >= (uint) maxcachesize) {  // blunt but effective (C) Habbie, mind04
+    auto signatures = g_signatures.write_lock();
+    if (g_cacheweekno < weekno || signatures->size() >= (uint) maxcachesize) {  // blunt but effective (C) Habbie, mind04
       g_log<<Logger::Warning<<"Cleared signature cache."<<endl;
-      g_signatures.clear();
+      signatures->clear();
       g_cacheweekno = weekno;
     }
-    g_signatures[lookup] = rrc.d_signature;
+    (*signatures)[lookup] = rrc.d_signature;
   }
 }
 
@@ -169,13 +168,12 @@ static void addSignature(DNSSECKeeper& dk, UeberBackend& db, const DNSName& sign
 
 uint64_t signatureCacheSize(const std::string& str)
 {
-  ReadLock l(&g_signatures_lock);
-  return g_signatures.size();
+  return g_signatures.read_lock()->size();
 }
 
 static bool rrsigncomp(const DNSZoneRecord& a, const DNSZoneRecord& b)
 {
-  return tie(a.dr.d_place, a.dr.d_type) < tie(b.dr.d_place, b.dr.d_type);
+  return std::tie(a.dr.d_place, a.dr.d_type) < std::tie(b.dr.d_place, b.dr.d_type);
 }
 
 static bool getBestAuthFromSet(const set<DNSName>& authSet, const DNSName& name, DNSName& auth)

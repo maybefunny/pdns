@@ -26,6 +26,7 @@
 
 void setupLuaBindingsDNSQuestion(LuaContext& luaCtx)
 {
+#ifndef DISABLE_NON_FFI_DQ_BINDINGS
   /* DNSQuestion */
   /* PowerDNS DNSQuestion compat */
   luaCtx.registerMember<const ComboAddress (DNSQuestion::*)>("localaddr", [](const DNSQuestion& dq) -> const ComboAddress { return *dq.local; }, [](DNSQuestion& dq, const ComboAddress newLocal) { (void) newLocal; });
@@ -54,7 +55,9 @@ void setupLuaBindingsDNSQuestion(LuaContext& luaCtx)
   luaCtx.registerFunction<bool(DNSQuestion::*)()const>("getDO", [](const DNSQuestion& dq) {
       return getEDNSZ(dq) & EDNS_HEADER_FLAG_DO;
     });
-
+  luaCtx.registerFunction<std::string(DNSQuestion::*)()const>("getContent", [](const DNSQuestion& dq) {
+    return std::string(reinterpret_cast<const char*>(dq.getData().data()), dq.getData().size());
+  });
   luaCtx.registerFunction<std::map<uint16_t, EDNSOptionView>(DNSQuestion::*)()const>("getEDNSOptions", [](const DNSQuestion& dq) {
       if (dq.ednsOptions == nullptr) {
         parseEDNSOptions(dq);
@@ -74,7 +77,7 @@ void setupLuaBindingsDNSQuestion(LuaContext& luaCtx)
     });
 
   luaCtx.registerFunction<std::string (DNSQuestion::*)()const>("getProtocol", [](const DNSQuestion& dq) {
-    return DNSQuestion::ProtocolToString(dq.getProtocol());
+    return dq.getProtocol().toPrettyString();
   });
 
   luaCtx.registerFunction<void(DNSQuestion::*)(std::string)>("sendTrap", [](const DNSQuestion& dq, boost::optional<std::string> reason) {
@@ -86,18 +89,11 @@ void setupLuaBindingsDNSQuestion(LuaContext& luaCtx)
     });
 
   luaCtx.registerFunction<void(DNSQuestion::*)(std::string, std::string)>("setTag", [](DNSQuestion& dq, const std::string& strLabel, const std::string& strValue) {
-      if(dq.qTag == nullptr) {
-        dq.qTag = std::make_shared<QTag>();
-      }
-      dq.qTag->insert({strLabel, strValue});
+      dq.setTag(strLabel, strValue);
     });
-  luaCtx.registerFunction<void(DNSQuestion::*)(vector<pair<string, string>>)>("setTagArray", [](DNSQuestion& dq, const vector<pair<string, string>>&tags) {
-      if (!dq.qTag) {
-        dq.qTag = std::make_shared<QTag>();
-      }
-
+  luaCtx.registerFunction<void(DNSQuestion::*)(LuaAssociativeTable<std::string>)>("setTagArray", [](DNSQuestion& dq, const LuaAssociativeTable<std::string>&tags) {
       for (const auto& tag : tags) {
-        dq.qTag->insert({tag.first, tag.second});
+        dq.setTag(tag.first, tag.second);
       }
     });
   luaCtx.registerFunction<string(DNSQuestion::*)(std::string)const>("getTag", [](const DNSQuestion& dq, const std::string& strLabel) {
@@ -121,7 +117,7 @@ void setupLuaBindingsDNSQuestion(LuaContext& luaCtx)
       return *dq.qTag;
     });
 
-  luaCtx.registerFunction<void(DNSQuestion::*)(std::vector<std::pair<uint8_t, std::string>>)>("setProxyProtocolValues", [](DNSQuestion& dq, const std::vector<std::pair<uint8_t, std::string>>& values) {
+  luaCtx.registerFunction<void(DNSQuestion::*)(LuaArray<std::string>)>("setProxyProtocolValues", [](DNSQuestion& dq, const LuaArray<std::string>& values) {
     if (!dq.proxyProtocolValues) {
       dq.proxyProtocolValues = make_unique<std::vector<ProxyProtocolValue>>();
     }
@@ -129,24 +125,26 @@ void setupLuaBindingsDNSQuestion(LuaContext& luaCtx)
     dq.proxyProtocolValues->clear();
     dq.proxyProtocolValues->reserve(values.size());
     for (const auto& value : values) {
-      dq.proxyProtocolValues->push_back({value.second, value.first});
+      checkParameterBound("setProxyProtocolValues", value.first, std::numeric_limits<uint8_t>::max());
+      dq.proxyProtocolValues->push_back({value.second, static_cast<uint8_t>(value.first)});
     }
   });
 
-  luaCtx.registerFunction<void(DNSQuestion::*)(uint8_t, std::string)>("addProxyProtocolValue", [](DNSQuestion& dq, uint8_t type, std::string value) {
+  luaCtx.registerFunction<void(DNSQuestion::*)(uint64_t, std::string)>("addProxyProtocolValue", [](DNSQuestion& dq, uint64_t type, std::string value) {
+    checkParameterBound("addProxyProtocolValue", type, std::numeric_limits<uint8_t>::max());
     if (!dq.proxyProtocolValues) {
       dq.proxyProtocolValues = make_unique<std::vector<ProxyProtocolValue>>();
     }
 
-    dq.proxyProtocolValues->push_back({value, type});
+    dq.proxyProtocolValues->push_back({value, static_cast<uint8_t>(type)});
   });
 
-  luaCtx.registerFunction<std::vector<std::pair<uint8_t, std::string>>(DNSQuestion::*)()>("getProxyProtocolValues", [](const DNSQuestion& dq) {
+  luaCtx.registerFunction<LuaArray<std::string>(DNSQuestion::*)()>("getProxyProtocolValues", [](const DNSQuestion& dq) {
+    LuaArray<std::string> result;
     if (!dq.proxyProtocolValues) {
-      return std::vector<std::pair<uint8_t, std::string>>();
+      return result;
     }
 
-    std::vector<std::pair<uint8_t, std::string>> result;
     result.resize(dq.proxyProtocolValues->size());
     for (const auto& value : *dq.proxyProtocolValues) {
       result.push_back({ value.type, value.content });
@@ -155,10 +153,10 @@ void setupLuaBindingsDNSQuestion(LuaContext& luaCtx)
     return result;
   });
 
-  luaCtx.registerFunction<void(DNSQuestion::*)(const boost::variant<std::vector<std::pair<int, ComboAddress>>, std::vector<std::pair<int, std::string>>>& response)>("spoof", [](DNSQuestion& dq, const boost::variant<std::vector<std::pair<int, ComboAddress>>, std::vector<std::pair<int, std::string>>>& response) {
-      if (response.type() == typeid(vector<pair<int, ComboAddress>>)) {
+  luaCtx.registerFunction<void(DNSQuestion::*)(const boost::variant<LuaArray<ComboAddress>, LuaArray<std::string>>& response)>("spoof", [](DNSQuestion& dq, const boost::variant<LuaArray<ComboAddress>, LuaArray<std::string>>& response) {
+      if (response.type() == typeid(LuaArray<ComboAddress>)) {
           std::vector<ComboAddress> data;
-          auto responses = boost::get<vector<pair<int, ComboAddress>>>(response);
+          auto responses = boost::get<LuaArray<ComboAddress>>(response);
           data.reserve(responses.size());
           for (const auto& resp : responses) {
             data.push_back(resp.second);
@@ -168,9 +166,9 @@ void setupLuaBindingsDNSQuestion(LuaContext& luaCtx)
           sa(&dq, &result);
 	  return;
       }
-      if (response.type() == typeid(vector<pair<int, string>>)) {
+      if (response.type() == typeid(LuaArray<std::string>)) {
           std::vector<std::string> data;
-          auto responses = boost::get<vector<pair<int, string>>>(response);
+          auto responses = boost::get<LuaArray<std::string>>(response);
           data.reserve(responses.size());
           for (const auto& resp : responses) {
             data.push_back(resp.second);
@@ -200,6 +198,9 @@ void setupLuaBindingsDNSQuestion(LuaContext& luaCtx)
   luaCtx.registerFunction<bool(DNSResponse::*)()const>("getDO", [](const DNSResponse& dq) {
       return getEDNSZ(dq) & EDNS_HEADER_FLAG_DO;
     });
+  luaCtx.registerFunction<std::string(DNSResponse::*)()const>("getContent", [](const DNSResponse& dq) {
+    return std::string(reinterpret_cast<const char*>(dq.getData().data()), dq.getData().size());
+  });
   luaCtx.registerFunction<std::map<uint16_t, EDNSOptionView>(DNSResponse::*)()const>("getEDNSOptions", [](const DNSResponse& dq) {
       if (dq.ednsOptions == nullptr) {
         parseEDNSOptions(dq);
@@ -215,19 +216,12 @@ void setupLuaBindingsDNSQuestion(LuaContext& luaCtx)
     });
 
   luaCtx.registerFunction<void(DNSResponse::*)(std::string, std::string)>("setTag", [](DNSResponse& dr, const std::string& strLabel, const std::string& strValue) {
-      if(dr.qTag == nullptr) {
-        dr.qTag = std::make_shared<QTag>();
-      }
-      dr.qTag->insert({strLabel, strValue});
+      dr.setTag(strLabel, strValue);
     });
 
-  luaCtx.registerFunction<void(DNSResponse::*)(vector<pair<string, string>>)>("setTagArray", [](DNSResponse& dr, const vector<pair<string, string>>&tags) {
-      if (!dr.qTag) {
-        dr.qTag = std::make_shared<QTag>();
-      }
-
+  luaCtx.registerFunction<void(DNSResponse::*)(LuaAssociativeTable<std::string>)>("setTagArray", [](DNSResponse& dr, const LuaAssociativeTable<string>&tags) {
       for (const auto& tag : tags) {
-        dr.qTag->insert({tag.first, tag.second});
+        dr.setTag(tag.first, tag.second);
       }
     });
   luaCtx.registerFunction<string(DNSResponse::*)(std::string)const>("getTag", [](const DNSResponse& dr, const std::string& strLabel) {
@@ -252,7 +246,7 @@ void setupLuaBindingsDNSQuestion(LuaContext& luaCtx)
     });
 
   luaCtx.registerFunction<std::string (DNSResponse::*)()const>("getProtocol", [](const DNSResponse& dr) {
-    return DNSQuestion::ProtocolToString(dr.getProtocol());
+    return dr.getProtocol().toPrettyString();
   });
 
   luaCtx.registerFunction<void(DNSResponse::*)(std::string)>("sendTrap", [](const DNSResponse& dr, boost::optional<std::string> reason) {
@@ -292,23 +286,32 @@ void setupLuaBindingsDNSQuestion(LuaContext& luaCtx)
       return dq.du->getHTTPScheme();
     });
 
-    luaCtx.registerFunction<std::unordered_map<std::string, std::string>(DNSQuestion::*)(void)const>("getHTTPHeaders", [](const DNSQuestion& dq) {
+    luaCtx.registerFunction<LuaAssociativeTable<std::string>(DNSQuestion::*)(void)const>("getHTTPHeaders", [](const DNSQuestion& dq) {
       if (dq.du == nullptr) {
-        return std::unordered_map<std::string, std::string>();
+        return LuaAssociativeTable<std::string>();
       }
       return dq.du->getHTTPHeaders();
     });
 
-    luaCtx.registerFunction<void(DNSQuestion::*)(uint16_t statusCode, const std::string& body, const boost::optional<std::string> contentType)>("setHTTPResponse", [](DNSQuestion& dq, uint16_t statusCode, const std::string& body, const boost::optional<std::string> contentType) {
+    luaCtx.registerFunction<void(DNSQuestion::*)(uint64_t statusCode, const std::string& body, const boost::optional<std::string> contentType)>("setHTTPResponse", [](DNSQuestion& dq, uint64_t statusCode, const std::string& body, const boost::optional<std::string> contentType) {
       if (dq.du == nullptr) {
         return;
       }
+      checkParameterBound("DNSQuestion::setHTTPResponse", statusCode, std::numeric_limits<uint16_t>::max());
       PacketBuffer vect(body.begin(), body.end());
       dq.du->setHTTPResponse(statusCode, std::move(vect), contentType ? *contentType : "");
     });
 #endif /* HAVE_DNS_OVER_HTTPS */
 
-  luaCtx.registerFunction<bool(DNSQuestion::*)(bool nxd, const std::string& zone, uint32_t ttl, const std::string& mname, const std::string& rname, uint32_t serial, uint32_t refresh, uint32_t retry, uint32_t expire, uint32_t minimum)>("setNegativeAndAdditionalSOA", [](DNSQuestion& dq, bool nxd, const std::string& zone, uint32_t ttl, const std::string& mname, const std::string& rname, uint32_t serial, uint32_t refresh, uint32_t retry, uint32_t expire, uint32_t minimum) {
-      return setNegativeAndAdditionalSOA(dq, nxd, DNSName(zone), ttl, DNSName(mname), DNSName(rname), serial, refresh, retry, expire, minimum);
+  luaCtx.registerFunction<bool(DNSQuestion::*)(bool nxd, const std::string& zone, uint64_t ttl, const std::string& mname, const std::string& rname, uint64_t serial, uint64_t refresh, uint64_t retry, uint64_t expire, uint64_t minimum)>("setNegativeAndAdditionalSOA", [](DNSQuestion& dq, bool nxd, const std::string& zone, uint64_t ttl, const std::string& mname, const std::string& rname, uint64_t serial, uint64_t refresh, uint64_t retry, uint64_t expire, uint64_t minimum) {
+      checkParameterBound("setNegativeAndAdditionalSOA", ttl, std::numeric_limits<uint32_t>::max());
+      checkParameterBound("setNegativeAndAdditionalSOA", serial, std::numeric_limits<uint32_t>::max());
+      checkParameterBound("setNegativeAndAdditionalSOA", refresh, std::numeric_limits<uint32_t>::max());
+      checkParameterBound("setNegativeAndAdditionalSOA", retry, std::numeric_limits<uint32_t>::max());
+      checkParameterBound("setNegativeAndAdditionalSOA", expire, std::numeric_limits<uint32_t>::max());
+      checkParameterBound("setNegativeAndAdditionalSOA", minimum, std::numeric_limits<uint32_t>::max());
+
+      return setNegativeAndAdditionalSOA(dq, nxd, DNSName(zone), ttl, DNSName(mname), DNSName(rname), serial, refresh, retry, expire, minimum, false);
     });
+#endif /* DISABLE_NON_FFI_DQ_BINDINGS */
 }

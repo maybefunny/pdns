@@ -2,6 +2,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include "test-syncres_cc.hh"
+#include "taskqueue.hh"
 #include "rec-taskqueue.hh"
 
 BOOST_AUTO_TEST_SUITE(syncres_cc2)
@@ -1107,7 +1108,7 @@ BOOST_AUTO_TEST_CASE(test_rfc8020_nodata_bis)
   BOOST_CHECK_EQUAL(g_negCache->size(), 2U);
 }
 
-BOOST_AUTO_TEST_CASE(test_skip_negcache_for_variable_response)
+BOOST_AUTO_TEST_CASE(test_dont_skip_negcache_for_variable_response)
 {
   std::unique_ptr<SyncRes> sr;
   initSR(sr);
@@ -1160,8 +1161,7 @@ BOOST_AUTO_TEST_CASE(test_skip_negcache_for_variable_response)
   int res = sr->beginResolve(target, QType(QType::A), QClass::IN, ret);
   BOOST_CHECK_EQUAL(res, RCode::NXDomain);
   BOOST_CHECK_EQUAL(ret.size(), 2U);
-  /* no negative cache entry because the response was variable */
-  BOOST_CHECK_EQUAL(g_negCache->size(), 0U);
+  BOOST_CHECK_EQUAL(g_negCache->size(), 1U);
 }
 
 BOOST_AUTO_TEST_CASE(test_ecs_cache_limit_allowed)
@@ -1823,9 +1823,9 @@ BOOST_AUTO_TEST_CASE(test_cache_almost_expired_ttl)
   BOOST_CHECK_EQUAL(ttl, 29U);
 
   // One task should be submitted
-  BOOST_CHECK_EQUAL(g_test_tasks.size(), 1U);
+  BOOST_CHECK_EQUAL(getTaskSize(), 1U);
 
-  auto task = g_test_tasks.pop();
+  auto task = taskQueuePop();
 
   // Refresh the almost expired record, its NS records also gets updated
   sr->setRefreshAlmostExpired(task.d_refreshMode);

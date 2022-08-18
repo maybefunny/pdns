@@ -4,8 +4,86 @@ Upgrade Guide
 Before upgrading, it is advised to read the :doc:`changelog/index`.
 When upgrading several versions, please read **all** notes applying to the upgrade.
 
-4.5.x to 4.6.0 or master
-------------------------
+4.7.0 to master
+---------------
+
+:program:`rec_control` changes
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+The ``dump-throttle`` subcommand no longer produces a table per thread, as the corresponding table now is shared by all threads.
+
+4.6.2 to 4.7.0
+---------------
+
+Zone to Cache Changes
+^^^^^^^^^^^^^^^^^^^^^
+The :ref:`ztc` feature now validates ``ZONEMD`` records. This means that zones containing invalid ``ZONEMD`` records will
+be rejected by default, while previously the ``ZONEMD`` records would be ignored. For more detail, refer to :ref:`ztc`.
+
+Asynchronous retrieval of ``AAAA`` records for nameservers
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+If ``IPv6`` is enabled for outgoing queries using :ref:`setting-query-local-address`, the :program:`Recursor` will schedule an asynchronous task to resolve ``IPv6`` addresses of nameservers it did not otherwise learn.
+These addresses will then be used (in addition to ``IPv4`` addresses) for future queries to authoritative nameservers.
+This has the consequence that authoritative nameservers will be contacted over ``IPv6`` in more case than before.
+
+New Lua Configuration Functions
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+- The :func:`addAllowedAdditionalQType` ``Lua`` configuration function was added to make the :program:`Recursor` add additional records to answers for specific query types.
+- The :func:`addProxyMapping` ``Lua`` configuration function was added to map source addresses to alternative addresses.
+
+Post Resolve FFI Function
+^^^^^^^^^^^^^^^^^^^^^^^^^
+A new :func:`postresolve_ffi` Lua callback function has been introduced.
+
+New settings
+^^^^^^^^^^^^
+- The :ref:`setting-save-parent-ns-set` setting has been introduced, enabling fallback cases if the parent ``NS`` set contains names not in the child ``NS`` set.
+- The :ref:`setting-max-busy-dot-probes` settings has been introduced, enabling the :program:`Recursor` probe for ``DoT`` support of authoritative servers.
+  This is an experimental function, use with care.
+
+:program:`rec_control` changes
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+The ``dump-nsspeeds``, ``dump-failedservers`` and ``dump-non-resolving`` subcommands no longer produce a table per thread, as the corresponding tables are now shared by all threads.
+They also use a better readable and sortable timestamp format.
+
+4.6.1 to 4.6.2
+--------------
+
+Deprecated and changed settings
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+-  The :ref:`setting-hint-file` gained a special value ``no`` to indicate that no hint file should be processed. The hint processing code is also made less verbose.
+
+4.5.x to 4.6.1
+--------------
+
+Offensive language
+^^^^^^^^^^^^^^^^^^
+Using the settings mentioned in :ref:`upgrade-offensive` now generates a warning. Please start using the new names.
+
+File descriptor usage
+^^^^^^^^^^^^^^^^^^^^^
+The number of file descriptors used by the Recursor has increased because the Recursor now keeps idle outgoing TCP/DoT connections open for a while.
+The extra file descriptors used in comparison to previous versions of the Recursor is :ref:`setting-tcp-out-max-idle-per-thread` times the number of worker threads (:ref:`setting-threads`).
+
+New settings
+^^^^^^^^^^^^
+- The :ref:`setting-dot-to-auth-names` setting to list nameservers that should be contacted over DoT has been introduced.
+- The :ref:`setting-dot-to-port-853` setting to specify that nameservers or forwarders using port 853 should be contacted over DoT has been introduced.
+- The :ref:`setting-ignore-unknown-settings` setting has been introduced to make it easier to switch between recursor versions supporting different settings.
+- The :ref:`setting-webserver-hash-plaintext-credentials` has been introduced to avoid keeping cleartext sensitive information in memory.
+- The :ref:`setting-tcp-out-max-idle-ms`, :ref:`setting-tcp-out-max-idle-per-auth`, :ref:`setting-tcp-out-max-queries` and :ref:`setting-tcp-out-max-idle-per-thread` settings have been introduced to control the new TCP/DoT outgoing connections pooling. This mechanism keeps connections to authoritative servers or forwarders open for later re-use.
+- The :ref:`setting-structured-logging` setting has been introduced to prefer structured logging (the default) when both an old style and a structured log messages is available.
+- The :ref:`setting-max-include-depth` setting has been introduced to limit the number of nested ``$include`` directives while processing a zone file.
+- The :ref:`setting-allow-notify-for`, :ref:`setting-allow-notify-for-file`, :ref:`setting-allow-notify-from` and :ref:`setting-allow-notify-from-file` settings have been introduced, allowing incoming notify queries to clear cache entries.
+
+Deprecated and changed settings
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+-  The :ref:`setting-api-key` and :ref:`setting-webserver-password` settings now accept a hashed and salted version (if the support is available in the openssl library used).
+
+Privileged port binding in Docker
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+In our Docker image, our binaries are no longer granted the ``net_bind_service`` capability, as this is unnecessary in many deployments.
+For more information, see the section `"Privileged ports" in Docker-README <https://github.com/PowerDNS/pdns/blob/master/Docker-README.md#privileged-ports>`__.
 
 4.5.1 to 4.5.2
 --------------
@@ -16,6 +94,8 @@ Deprecated and changed settings
 
 4.4.x to 4.5.1
 --------------
+
+.. _upgrade-offensive:
 
 Offensive language
 ^^^^^^^^^^^^^^^^^^
@@ -82,6 +162,10 @@ To conform better to the standard, RPZ processing has been modified.
 This has consequences for the points in the resolving process where matches are checked and callbacks are called.
 See :ref:`rpz` for details. Additionally a new type of callback has been introduced: :func:`policyEventFilter`.
 
+Dropping queries from Lua callbacks
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+The method to drop a query from a Lua callback has been changed.
+Previously, you could set `rcode` to `pdns.DROP`. See :ref:`hook-semantics` for the new method.
 
 Parsing of unknown record types
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

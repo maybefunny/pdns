@@ -23,12 +23,16 @@
 
 #include <vector>
 #include <boost/multi_index_container.hpp>
+#include <boost/multi_index/ordered_index.hpp>
 #include <boost/multi_index/hashed_index.hpp>
+#include <boost/multi_index/sequenced_index.hpp>
+#include <boost/multi_index/key_extractors.hpp>
 #include <boost/optional.hpp>
 #include "dnsparser.hh"
 #include "dnsname.hh"
 #include "dns.hh"
 #include "lock.hh"
+#include "stat_t.hh"
 #include "validate.hh"
 
 using namespace ::boost::multi_index;
@@ -113,7 +117,7 @@ private:
       uint64_t d_acquired_count{0};
       void invalidate() {}
     };
-    std::atomic<uint64_t> d_entriesCount{0};
+    pdns::stat_t d_entriesCount{0};
 
     LockGuardedTryHolder<MapCombo::LockedContent> lock()
     {

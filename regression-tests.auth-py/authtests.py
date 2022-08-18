@@ -180,8 +180,6 @@ options {
         authcmd.append('--local-address=%s' % ipaddress)
         authcmd.append('--local-port=%s' % cls._authPort)
         authcmd.append('--loglevel=9')
-        authcmd.append('--enable-lua-records')
-        authcmd.append('--lua-health-checks-interval=1')
         authcmd.append('--zone-cache-refresh-interval=0')
         print(' '.join(authcmd))
         logFile = os.path.join(confdir, 'pdns.log')
@@ -547,8 +545,12 @@ options {
                 raise TypeError("rcode is neither a str nor int")
 
         if msg.rcode() != rcode:
-            msgRcode = dns.rcode.to_text(msg.rcode())
-            wantedRcode = dns.rcode.to_text(rcode)
+            try:
+                msgRcode = dns.rcode.to_text(msg.rcode())
+                wantedRcode = dns.rcode.to_text(rcode)
+            except AttributeError:
+                msgRcode = msg.rcode()
+                wantedRcode = rcode
 
             raise AssertionError("Rcode for %s is %s, expected %s." % (msg.question[0].to_text(), msgRcode, wantedRcode))
 

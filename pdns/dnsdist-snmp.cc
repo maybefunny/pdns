@@ -307,7 +307,7 @@ static int backendStatTable_handler(netsnmp_mib_handler* handler,
         break;
       case COLUMN_BACKENDWEIGHT:
         DNSDistSNMPAgent::setCounter64Value(request,
-                                            server->weight);
+                                            server->d_config.d_weight);
         break;
       case COLUMN_BACKENDOUTSTANDING:
         DNSDistSNMPAgent::setCounter64Value(request,
@@ -331,7 +331,7 @@ static int backendStatTable_handler(netsnmp_mib_handler* handler,
       }
       case COLUMN_BACKENDADDRESS:
       {
-        std::string addr(server->remote.toStringWithPort());
+        std::string addr(server->d_config.remote.toStringWithPort());
         snmp_set_var_typed_value(request->requestvb,
                                  ASN_OCTET_STR,
                                  addr.c_str(),
@@ -341,10 +341,11 @@ static int backendStatTable_handler(netsnmp_mib_handler* handler,
       case COLUMN_BACKENDPOOLS:
       {
         std::string pools;
-        for(auto& p : server->pools) {
-          if(!pools.empty())
+        for (const auto& p : server->d_config.pools) {
+          if (!pools.empty()) {
             pools+=" ";
-          pools+=p;
+          }
+          pools += p;
         }
         snmp_set_var_typed_value(request->requestvb,
                                  ASN_OCTET_STR,
@@ -359,7 +360,7 @@ static int backendStatTable_handler(netsnmp_mib_handler* handler,
         DNSDistSNMPAgent::setCounter64Value(request, server->queries.load());
         break;
       case COLUMN_BACKENDORDER:
-        DNSDistSNMPAgent::setCounter64Value(request, server->order);
+        DNSDistSNMPAgent::setCounter64Value(request, server->d_config.order);
         break;
       default:
         netsnmp_set_request_error(reqinfo,
@@ -377,7 +378,7 @@ static int backendStatTable_handler(netsnmp_mib_handler* handler,
 bool DNSDistSNMPAgent::sendBackendStatusChangeTrap(const std::shared_ptr<DownstreamState>& dss)
 {
 #ifdef HAVE_NET_SNMP
-  const string backendAddress = dss->remote.toStringWithPort();
+  const string backendAddress = dss->d_config.remote.toStringWithPort();
   const string backendStatus = dss->getStatus();
   netsnmp_variable_list* varList = nullptr;
 
@@ -468,14 +469,14 @@ bool DNSDistSNMPAgent::sendDNSTrap(const DNSQuestion& dq, const std::string& rea
                             socketFamilyOID,
                             OID_LENGTH(socketFamilyOID),
                             ASN_INTEGER,
-                            (u_char *) &socketFamily,
+                            reinterpret_cast<const u_char*>(&socketFamily),
                             sizeof(socketFamily));
 
   snmp_varlist_add_variable(&varList,
                             socketProtocolOID,
                             OID_LENGTH(socketProtocolOID),
                             ASN_INTEGER,
-                            (u_char *) &socketProtocol,
+                            reinterpret_cast<const u_char*>(&socketProtocol),
                             sizeof(socketProtocol));
 
   snmp_varlist_add_variable(&varList,
@@ -496,21 +497,21 @@ bool DNSDistSNMPAgent::sendDNSTrap(const DNSQuestion& dq, const std::string& rea
                             queryTypeOID,
                             OID_LENGTH(queryTypeOID),
                             ASN_INTEGER,
-                            (u_char *) &queryType,
+                            reinterpret_cast<const u_char*>(&queryType),
                             sizeof(queryType));
 
   snmp_varlist_add_variable(&varList,
                             querySizeOID,
                             OID_LENGTH(querySizeOID),
                             ASN_UNSIGNED,
-                            (u_char *) &querySize,
+                            reinterpret_cast<const u_char*>(&querySize),
                             sizeof(querySize));
 
   snmp_varlist_add_variable(&varList,
                             queryIDOID,
                             OID_LENGTH(queryIDOID),
                             ASN_UNSIGNED,
-                            (u_char *) &queryID,
+                            reinterpret_cast<const u_char*>(&queryID),
                             sizeof(queryID));
 
   snmp_varlist_add_variable(&varList,
@@ -524,14 +525,14 @@ bool DNSDistSNMPAgent::sendDNSTrap(const DNSQuestion& dq, const std::string& rea
                             qClassOID,
                             OID_LENGTH(qClassOID),
                             ASN_UNSIGNED,
-                            (u_char *) &qClass,
+                            reinterpret_cast<const u_char*>(&qClass),
                             sizeof(qClass));
 
   snmp_varlist_add_variable(&varList,
                             qTypeOID,
                             OID_LENGTH(qTypeOID),
                             ASN_UNSIGNED,
-                            (u_char *) &qType,
+                            reinterpret_cast<const u_char*>(&qType),
                             sizeof(qType));
 
   snmp_varlist_add_variable(&varList,

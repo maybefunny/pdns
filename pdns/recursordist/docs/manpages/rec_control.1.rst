@@ -92,6 +92,9 @@ dump-cache *FILENAME*
     also dumped to the same file. The per-thread positive and negative cache
     dumps are separated with an appropriate comment.
 
+dump-dot-probe-map *FILENAME*
+    Dump the contents of the DoT probe map to the *FILENAME* mentioned.
+
 dump-edns *FILENAME*
     Dumps the EDNS status to the filename mentioned. This file should not exist
     already, PowerDNS will refuse to overwrite it. While dumping, the recursor
@@ -119,7 +122,16 @@ dump-rpz *ZONE NAME* *FILE NAME*
     Dumps the content of the RPZ zone named *ZONE NAME* to the *FILENAME*
     mentioned. This file should not exist already, PowerDNS will refuse to
     overwrite it otherwise. While dumping, the recursor will not answer
-    questions.
+    questions. For details on how RPZ are named see
+    `<https://docs.powerdns.com/recursor/lua-config/rpz.html#policyname>`__.
+
+dump-saved-parent-ns-sets *FILE NAME*
+    Dump the entries of the map containing saved parent NS sets
+    that were successfully used in resolving.
+    The total number of entries is also printed in the header.
+    An entry is saved if the recursor sees that the parent set includes
+    names not in the child set. This is an indication of a
+    misconfigured domain.
 
 dump-throttlemap *FILENAME*
     Dump the contents of the throttle map to the *FILENAME* mentioned.
@@ -129,7 +141,7 @@ dump-throttlemap *FILENAME*
 
 get *STATISTIC* [*STATISTIC*]...
     Retrieve a statistic. For items that can be queried, see
-    :doc:`../metrics`
+    `<https://docs.powerdns.com/recursor/metrics.html>`__.
 
 get-all
     Retrieve all known statistics.
@@ -151,6 +163,13 @@ get-parameter *KEY* [*KEY*]...
 
 get-qtypelist
     Retrieves QType statistics. Queries from cache aren't being counted yet.
+
+hash-password [*WORK-FACTOR*]
+    Asks for a password then returns the hashed and salted version,
+    to use as a webserver password or API key. This command does
+    not contact the recursor but does the hashing inside rec_control.
+    An optional scrypt work factor can be specified, in power of two.
+    The default is 1024.
 
 help
     Shows a list of supported commands understood by the running
@@ -210,6 +229,9 @@ set-max-packetcache-entries *NUM*
 
 set-minimum-ttl *NUM*
     Set minimum-ttl-override to *NUM*.
+
+set-event-trace-enabled *NUM*
+    Set logging of event trace messages, 0 = disabled, 1 = protobuf, 2 = log file, 3 = both.
 
 top-queries
     Shows the top-20 queries. Statistics are over the last
@@ -304,3 +326,4 @@ wipe-cache-typed *qtype* *DOMAIN* [*DOMAIN*] [...]
 See also
 --------
 :manpage:`pdns_recursor(1)`
+`<https://docs.powerdns.com/recursor>`__

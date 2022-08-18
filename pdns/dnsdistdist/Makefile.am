@@ -5,6 +5,7 @@ AM_CPPFLAGS += $(SYSTEMD_CFLAGS) \
 	$(FSTRM_CFLAGS) \
 	$(YAHTTP_CFLAGS) \
 	$(NET_SNMP_CFLAGS) \
+	$(NGHTTP2_CFLAGS) \
 	$(LIBCAP_CFLAGS) \
 	-I$(top_srcdir)/ext/protozero/include \
 	-DSYSCONFDIR=\"${sysconfdir}\" \
@@ -122,25 +123,29 @@ dnsdist-web.$(OBJEXT): htmlfiles.h
 dnsdist-lua-ffi.$(OBJEXT): dnsdist-lua-ffi-interface.inc
 
 dnsdist_SOURCES = \
-	ascii.hh \
 	base64.hh \
 	bpf-filter.cc bpf-filter.hh \
+	burtle.hh \
 	cachecleaner.hh \
 	capabilities.cc capabilities.hh \
 	circular_buffer.hh \
 	connection-management.hh \
+	credentials.cc credentials.hh \
 	dns.cc dns.hh \
+	dns_random.hh \
 	dnscrypt.cc dnscrypt.hh \
 	dnsdist-backend.cc \
 	dnsdist-cache.cc dnsdist-cache.hh \
-	dnsdist-carbon.cc \
+	dnsdist-carbon.cc dnsdist-carbon.hh \
 	dnsdist-console.cc dnsdist-console.hh \
+	dnsdist-discovery.cc dnsdist-discovery.hh \
 	dnsdist-dnscrypt.cc \
+	dnsdist-downstream-connection.hh \
 	dnsdist-dynblocks.cc dnsdist-dynblocks.hh \
 	dnsdist-dynbpf.cc dnsdist-dynbpf.hh \
 	dnsdist-ecs.cc dnsdist-ecs.hh \
 	dnsdist-healthchecks.cc dnsdist-healthchecks.hh \
-	dnsdist-idstate.cc \
+	dnsdist-idstate.cc dnsdist-idstate.hh \
 	dnsdist-kvs.hh dnsdist-kvs.cc \
 	dnsdist-lbpolicies.cc dnsdist-lbpolicies.hh \
 	dnsdist-lua-actions.cc \
@@ -158,17 +163,22 @@ dnsdist_SOURCES = \
 	dnsdist-lua-vars.cc \
 	dnsdist-lua-web.cc \
 	dnsdist-lua.cc dnsdist-lua.hh \
+	dnsdist-nghttp2.cc dnsdist-nghttp2.hh \
 	dnsdist-prometheus.hh \
 	dnsdist-protobuf.cc dnsdist-protobuf.hh \
+	dnsdist-protocols.cc dnsdist-protocols.hh \
 	dnsdist-proxy-protocol.cc dnsdist-proxy-protocol.hh \
+	dnsdist-random.cc dnsdist-random.hh \
 	dnsdist-rings.cc dnsdist-rings.hh \
 	dnsdist-rules.cc dnsdist-rules.hh \
 	dnsdist-secpoll.cc dnsdist-secpoll.hh \
+	dnsdist-session-cache.cc dnsdist-session-cache.hh \
 	dnsdist-snmp.cc dnsdist-snmp.hh \
+	dnsdist-svc.cc dnsdist-svc.hh \
 	dnsdist-systemd.cc dnsdist-systemd.hh \
 	dnsdist-tcp-downstream.cc dnsdist-tcp-downstream.hh \
 	dnsdist-tcp-upstream.hh \
-	dnsdist-tcp.cc \
+	dnsdist-tcp.cc dnsdist-tcp.hh \
 	dnsdist-web.cc dnsdist-web.hh \
 	dnsdist-xpf.cc dnsdist-xpf.hh \
 	dnsdist.cc dnsdist.hh \
@@ -192,6 +202,7 @@ dnsdist_SOURCES = \
 	iputils.cc iputils.hh \
 	libssl.cc libssl.hh \
 	lock.hh \
+	logging.hh \
 	misc.cc misc.hh \
 	mplexer.hh \
 	namespaces.hh \
@@ -222,14 +233,16 @@ testrunner_SOURCES = \
 	cachecleaner.hh \
 	circular_buffer.hh \
 	connection-management.hh \
+	credentials.cc credentials.hh \
 	dns.cc dns.hh \
 	dnscrypt.cc dnscrypt.hh \
 	dnsdist-backend.cc \
 	dnsdist-cache.cc dnsdist-cache.hh \
+	dnsdist-downstream-connection.hh \
 	dnsdist-dynblocks.cc dnsdist-dynblocks.hh \
 	dnsdist-dynbpf.cc dnsdist-dynbpf.hh \
 	dnsdist-ecs.cc dnsdist-ecs.hh \
-	dnsdist-idstate.cc \
+	dnsdist-idstate.cc dnsdist-idstate.hh \
 	dnsdist-kvs.cc dnsdist-kvs.hh \
 	dnsdist-lbpolicies.cc dnsdist-lbpolicies.hh \
 	dnsdist-lua-bindings-dnsquestion.cc \
@@ -238,11 +251,16 @@ testrunner_SOURCES = \
 	dnsdist-lua-ffi-interface.h dnsdist-lua-ffi-interface.inc \
 	dnsdist-lua-ffi.cc dnsdist-lua-ffi.hh \
 	dnsdist-lua-vars.cc \
+	dnsdist-nghttp2.cc dnsdist-nghttp2.hh \
+	dnsdist-protocols.cc dnsdist-protocols.hh \
 	dnsdist-proxy-protocol.cc dnsdist-proxy-protocol.hh \
+	dnsdist-random.cc dnsdist-random.hh \
 	dnsdist-rings.cc dnsdist-rings.hh \
 	dnsdist-rules.cc dnsdist-rules.hh \
+	dnsdist-session-cache.cc dnsdist-session-cache.hh \
+	dnsdist-svc.cc dnsdist-svc.hh \
 	dnsdist-tcp-downstream.cc \
-	dnsdist-tcp.cc \
+	dnsdist-tcp.cc dnsdist-tcp.hh \
 	dnsdist-xpf.cc dnsdist-xpf.hh \
 	dnsdist.hh \
 	dnslabeltext.cc \
@@ -271,15 +289,19 @@ testrunner_SOURCES = \
 	svc-records.cc svc-records.hh \
 	test-base64_cc.cc \
 	test-connectionmanagement_hh.cc \
+	test-credentials_cc.cc \
 	test-delaypipe_hh.cc \
 	test-dnscrypt_cc.cc \
+	test-dnsdist-connections-cache.cc \
 	test-dnsdist_cc.cc \
 	test-dnsdistdynblocks_hh.cc \
 	test-dnsdistkvs_cc.cc \
 	test-dnsdistlbpolicies_cc.cc \
+	test-dnsdistnghttp2_cc.cc \
 	test-dnsdistpacketcache_cc.cc \
 	test-dnsdistrings_cc.cc \
 	test-dnsdistrules_cc.cc \
+	test-dnsdistsvc_cc.cc \
 	test-dnsdisttcp_cc.cc \
 	test-dnsparser_cc.cc \
 	test-iputils_hh.cc \
@@ -294,7 +316,7 @@ testrunner_SOURCES = \
 dnsdist_LDFLAGS = \
 	$(AM_LDFLAGS) \
 	$(PROGRAM_LDFLAGS) \
-	-pthread 
+	-pthread
 
 dnsdist_LDADD = \
 	$(LUA_LIBS) \
@@ -339,6 +361,7 @@ endif
 
 if HAVE_LIBCRYPTO
 dnsdist_LDADD += $(LIBCRYPTO_LDFLAGS) $(LIBCRYPTO_LIBS)
+testrunner_LDADD += $(LIBCRYPTO_LDFLAGS) $(LIBCRYPTO_LIBS)
 dnsdist_SOURCES += ipcipher.cc ipcipher.hh
 endif
 
@@ -361,6 +384,11 @@ if HAVE_LIBH2OEVLOOP
 dnsdist_LDADD += $(LIBH2OEVLOOP_LIBS)
 endif
 
+endif
+
+if HAVE_NGHTTP2
+dnsdist_LDADD += $(NGHTTP2_LDFLAGS) $(NGHTTP2_LIBS)
+testrunner_LDADD += $(NGHTTP2_LDFLAGS) $(NGHTTP2_LIBS)
 endif
 
 if !HAVE_LUA_HPP
@@ -387,11 +415,11 @@ endif
 
 if HAVE_SOLARIS
 dnsdist_SOURCES += \
-        devpollmplexer.cc \
-        portsmplexer.cc
+	devpollmplexer.cc \
+	portsmplexer.cc
 testrunner_SOURCES += \
-        devpollmplexer.cc \
-        portsmplexer.cc
+	devpollmplexer.cc \
+	portsmplexer.cc
 endif
 
 MANPAGES=dnsdist.1
@@ -503,6 +531,7 @@ endif
 dnsdist@.service: dnsdist.service
 	$(AM_V_GEN)sed -e 's!/dnsdist !&--config $(sysconfdir)/dnsdist-%i.conf !' \
 	  -e 's!RuntimeDirectory=.*!&-%i!' \
+	  -e 's!SyslogIdentifier=.*!&-%i!' \
 	  < $< >$@
 
 systemdsystemunitdir = $(SYSTEMD_DIR)

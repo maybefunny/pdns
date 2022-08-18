@@ -1,3 +1,4 @@
+#include "dnswriter.hh"
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
@@ -156,7 +157,7 @@ uint PacketHandler::performUpdate(const string &msgPrefix, const DNSRecord *rr, 
           di->backend->replaceRRSet(di->id, oldRec->qname, oldRec->qtype, rrset);
           *updatedSerial = true;
           changedRecords++;
-          g_log<<Logger::Notice<<msgPrefix<<"Replacing record "<<rr->d_name<<"|"<<rrType.toString()<<endl;
+          g_log<<Logger::Notice<<msgPrefix<<"Replacing SOA record "<<rr->d_name<<"|"<<rrType.toString()<<endl;
         } else {
           g_log<<Logger::Notice<<msgPrefix<<"Provided serial ("<<sdUpdate.serial<<") is older than the current serial ("<<sdOld.serial<<"), ignoring SOA update."<<endl;
         }
@@ -173,10 +174,10 @@ uint PacketHandler::performUpdate(const string &msgPrefix, const DNSRecord *rr, 
         }
         if (changedCNames > 0) {
           di->backend->replaceRRSet(di->id, rr->d_name, rrType, rrset);
-          g_log<<Logger::Notice<<msgPrefix<<"Replacing record "<<rr->d_name<<"|"<<rrType.toString()<<endl;
+          g_log<<Logger::Notice<<msgPrefix<<"Replacing CNAME record "<<rr->d_name<<"|"<<rrType.toString()<<endl;
           changedRecords += changedCNames;
         } else {
-          g_log<<Logger::Notice<<msgPrefix<<"Replace for record "<<rr->d_name<<"|"<<rrType.toString()<<" requested, but no changes made."<<endl;
+          g_log<<Logger::Notice<<msgPrefix<<"Replace for CNAME record "<<rr->d_name<<"|"<<rrType.toString()<<" requested, but no changes made."<<endl;
         }
 
       // In any other case, we must check if the TYPE and RDATA match to provide an update (which effectively means a update of TTL)
@@ -194,8 +195,10 @@ uint PacketHandler::performUpdate(const string &msgPrefix, const DNSRecord *rr, 
         for (auto& i : rrset) {
           string icontent = i.getZoneRepresentation();
           if (lowerCase) icontent = toLower(icontent);
-          if (rrType == i.qtype.getCode() && icontent == content) {
-            foundRecord=true;
+          if (rrType == i.qtype.getCode()) {
+            if (icontent == content) {
+              foundRecord=true;
+            }
             if (i.ttl != rr->d_ttl)  {
               i.ttl = rr->d_ttl;
               updateTTL++;
@@ -204,10 +207,10 @@ uint PacketHandler::performUpdate(const string &msgPrefix, const DNSRecord *rr, 
         }
         if (updateTTL > 0) {
           di->backend->replaceRRSet(di->id, rr->d_name, rrType, rrset);
-          g_log<<Logger::Notice<<msgPrefix<<"Replacing record "<<rr->d_name<<"|"<<rrType.toString()<<endl;
+          g_log<<Logger::Notice<<msgPrefix<<"Updating TTLs for "<<rr->d_name<<"|"<<rrType.toString()<<endl;
           changedRecords += updateTTL;
         } else {
-          g_log<<Logger::Notice<<msgPrefix<<"Replace for record "<<rr->d_name<<"|"<<rrType.toString()<<" requested, but no changes made."<<endl;
+          g_log<<Logger::Notice<<msgPrefix<<"Replace for recordset "<<rr->d_name<<"|"<<rrType.toString()<<" requested, but no changes made."<<endl;
         }
       }
 
@@ -396,7 +399,17 @@ uint PacketHandler::performUpdate(const string &msgPrefix, const DNSRecord *rr, 
           recordsToDelete.push_back(rec);
       }
       if (rr->d_class == QClass::NONE) { // 3.4.2.4
-        if (rrType == rec.qtype && rec.getZoneRepresentation() == rr->d_content->getZoneRepresentation())
+        auto repr = rec.getZoneRepresentation();
+        if (rec.qtype == QType::TXT) {
+          DLOG(g_log<<msgPrefix<<"Adjusting TXT content from ["<<repr<<"]"<<endl);
+          auto drc = DNSRecordContent::mastermake(rec.qtype.getCode(), QClass::IN, repr);
+          auto ser = drc->serialize(rec.qname, true, true);
+          auto rc = DNSRecordContent::deserialize(rec.qname, rec.qtype.getCode(), ser);
+          repr = rc->getZoneRepresentation(true);
+          DLOG(g_log<<msgPrefix<<"Adjusted TXT content to ["<<repr<<"]"<<endl);
+        }
+        DLOG(g_log<<msgPrefix<<"Matching RR in RRset - (adjusted) representation from request=["<<repr<<"], rr->d_content->getZoneRepresentation()=["<<rr->d_content->getZoneRepresentation()<<"]"<<endl);
+        if (rrType == rec.qtype && repr == rr->d_content->getZoneRepresentation())
           recordsToDelete.push_back(rec);
         else
           rrset.push_back(rec);
@@ -644,7 +657,7 @@ int PacketHandler::processUpdate(DNSPacket& p) {
   if (! ::arg().mustDo("dnsupdate"))
     return RCode::Refused;
 
-  string msgPrefix="UPDATE (" + itoa(p.d.id) + ") from " + p.getRemote().toString() + " for " + p.qdomain.toLogString() + ": ";
+  string msgPrefix="UPDATE (" + itoa(p.d.id) + ") from " + p.getRemoteString() + " for " + p.qdomain.toLogString() + ": ";
   g_log<<Logger::Info<<msgPrefix<<"Processing started."<<endl;
 
   // if there is policy, we delegate all checks to it
@@ -661,7 +674,7 @@ int PacketHandler::processUpdate(DNSPacket& p) {
       ng.addMask(i);
     }
 
-    if ( ! ng.match(&p.d_remote)) {
+    if ( ! ng.match(p.getInnerRemote())) {
       g_log<<Logger::Error<<msgPrefix<<"Remote not listed in allow-dnsupdate-from or domainmetadata. Sending REFUSED"<<endl;
       return RCode::Refused;
     }
@@ -776,7 +789,7 @@ int PacketHandler::processUpdate(DNSPacket& p) {
         return RCode::FormErr;
 
       if (rr->d_class == QClass::IN) {
-        rrSetKey_t key = make_pair(rr->d_name, QType(rr->d_type));
+        rrSetKey_t key = {rr->d_name, QType(rr->d_type)};
         rrVector_t *vec = &preReqRRsets[key];
         vec->push_back(DNSResourceRecord::fromWire(*rr));
       }

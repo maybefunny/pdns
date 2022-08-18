@@ -3,6 +3,10 @@ PROBDS_LIBS = $(top_srcdir)/ext/probds/libprobds.la
 
 AM_CPPFLAGS = $(LUA_CFLAGS) $(YAHTTP_CFLAGS) $(BOOST_CPPFLAGS) $(LIBSODIUM_CFLAGS) $(NET_SNMP_CFLAGS) $(LIBCAP_CFLAGS) $(SANITIZER_FLAGS) -O3 -Wall -pthread -DSYSCONFDIR=\"${sysconfdir}\" $(SYSTEMD_CFLAGS)
 
+if LIBDECAF
+AM_CPPFLAGS += $(LIBDECAF_CFLAGS)
+endif
+
 AM_CPPFLAGS += \
 	-I$(top_srcdir)/ext/json11 \
 	-I$(top_srcdir)/ext/protozero/include \
@@ -97,14 +101,16 @@ endif
 pdns_recursor_SOURCES = \
 	aggressive_nsec.cc aggressive_nsec.hh \
 	arguments.cc \
-	ascii.hh \
+	auth-catalogzone.hh \
 	axfr-retriever.hh axfr-retriever.cc \
 	base32.cc base32.hh \
 	base64.cc base64.hh \
+	burtle.hh \
 	cachecleaner.hh \
 	capabilities.cc capabilities.hh \
 	circular_buffer.hh \
 	comment.hh \
+	credentials.cc credentials.hh \
 	dns.hh dns.cc \
 	dns_random.hh dns_random.cc \
 	dnsbackend.hh \
@@ -158,14 +164,20 @@ pdns_recursor_SOURCES = \
 	query-local-address.hh query-local-address.cc \
 	rcpgenerator.cc rcpgenerator.hh \
 	rec-carbon.cc \
+	rec-eventtrace.cc rec-eventtrace.hh \
 	rec-lua-conf.hh rec-lua-conf.cc \
+	rec-main.hh rec-main.cc \
 	rec-protozero.cc rec-protozero.hh \
 	rec-snmp.hh rec-snmp.cc \
 	rec-taskqueue.cc rec-taskqueue.hh \
+	rec-tcp.cc \
+	rec-tcpout.cc rec-tcpout.hh \
+	rec-zonetocache.cc rec-zonetocache.hh \
 	rec_channel.cc rec_channel.hh rec_metrics.hh \
 	rec_channel_rec.cc \
 	recpacketcache.cc recpacketcache.hh \
 	recursor_cache.cc recursor_cache.hh \
+	reczones-helpers.cc reczones-helpers.hh \
 	reczones.cc \
 	remote_logger.cc remote_logger.hh \
 	resolve-context.hh \
@@ -176,6 +188,7 @@ pdns_recursor_SOURCES = \
 	rpzloader.cc rpzloader.hh \
 	secpoll-recursor.cc secpoll-recursor.hh \
 	secpoll.cc secpoll.hh \
+	sha.hh \
 	sholder.hh \
 	shuffle.cc shuffle.hh \
 	sillyrecords.cc \
@@ -200,6 +213,7 @@ pdns_recursor_SOURCES = \
 	ws-api.cc ws-api.hh \
 	ws-recursor.cc ws-recursor.hh \
 	xpf.cc xpf.hh \
+	zonemd.cc zonemd.hh \
 	zoneparser-tng.cc zoneparser-tng.hh
 
 if !HAVE_LUA_HPP
@@ -233,6 +247,11 @@ pdns_recursor_LDFLAGS += \
 	$(BOOST_FILESYSTEM_LDFLAGS)
 endif
 
+rec_control_LDADD = $(LIBCRYPTO_LIBS)
+
+rec_control_LDFLAGS = $(AM_LDFLAGS) \
+	$(LIBCRYPTO_LDFLAGS)
+
 testrunner_SOURCES = \
 	aggressive_nsec.cc aggressive_nsec.hh \
 	arguments.cc \
@@ -240,6 +259,7 @@ testrunner_SOURCES = \
 	base32.cc \
 	base64.cc base64.hh \
 	circular_buffer.hh \
+	credentials.cc credentials.hh \
 	dns.cc dns.hh \
 	dns_random.cc dns_random.hh \
 	dnslabeltext.cc \
@@ -271,8 +291,12 @@ testrunner_SOURCES = \
 	qtype.cc qtype.hh \
 	query-local-address.hh query-local-address.cc \
 	rcpgenerator.cc \
+	rec-eventtrace.cc rec-eventtrace.hh \
+	rec-taskqueue.cc rec-taskqueue.hh \
+	rec-zonetocache.cc rec-zonetocache.hh \
 	recpacketcache.cc recpacketcache.hh \
 	recursor_cache.cc recursor_cache.hh \
+	reczones-helpers.cc reczones-helpers.hh \
 	resolver.hh resolver.cc \
 	responsestats.cc \
 	root-dnssec.hh \
@@ -290,6 +314,7 @@ testrunner_SOURCES = \
 	test-base32_cc.cc \
 	test-base64_cc.cc \
 	test-common.hh \
+	test-credentials_cc.cc \
 	test-dns_random_hh.cc \
 	test-dnsname_cc.cc \
 	test-dnsparser_hh.cc \
@@ -307,8 +332,11 @@ testrunner_SOURCES = \
 	test-negcache_cc.cc \
 	test-packetcache_hh.cc \
 	test-rcpgenerator_cc.cc \
+	test-rec-taskqueue.cc \
+	test-rec-zonetocache.cc \
 	test-recpacketcache_cc.cc \
 	test-recursorcache_cc.cc \
+	test-reczones-helpers.cc \
 	test-rpzloader_cc.cc \
 	test-secpoll_cc.cc \
 	test-signers.cc \
@@ -333,6 +361,7 @@ testrunner_SOURCES = \
 	validate-recursor.cc validate-recursor.hh \
 	validate.cc validate.hh \
 	xpf.cc xpf.hh \
+	zonemd.cc zonemd.hh \
 	zoneparser-tng.cc zoneparser-tng.hh
 
 testrunner_LDFLAGS = \
@@ -365,10 +394,15 @@ if LIBSODIUM
 pdns_recursor_SOURCES += \
 	sodiumsigners.cc
 pdns_recursor_LDADD += $(LIBSODIUM_LIBS)
+
+rec_control_LDADD += $(LIBSODIUM_LIBS)
+
 testrunner_SOURCES += \
 	sodiumsigners.cc
 testrunner_LDADD += $(LIBSODIUM_LIBS)
 endif
+
+
 
 if LIBDECAF
 pdns_recursor_SOURCES += \
@@ -431,17 +465,27 @@ AM_CPPFLAGS += $(LIBSSL_CFLAGS)
 pdns_recursor_LDADD += $(LIBSSL_LIBS)
 endif
 
-if HAVE_GNUTLS
-AM_CPPFLAGS += $(GNUTLS_CFLAGS)
-pdns_recursor_LDADD += $(GNUTLS_LIBS)
+#if HAVE_GNUTLS
+#AM_CPPFLAGS += $(GNUTLS_CFLAGS)
+#pdns_recursor_LDADD += $(GNUTLS_LIBS)
+#endif
 endif
+if HAVE_LIBCURL
+pdns_recursor_SOURCES += minicurl.cc minicurl.hh
+pdns_recursor_LDADD += $(LIBCURL)
+testrunner_SOURCES += minicurl.cc minicurl.hh
+testrunner_LDADD += $(LIBCURL)
 endif
+
 
 rec_control_SOURCES = \
 	arguments.cc arguments.hh \
+	base64.cc base64.hh \
+	credentials.cc credentials.hh \
 	dnslabeltext.cc \
 	dnsname.hh dnsname.cc \
 	logger.cc \
+	logging.cc \
 	misc.cc \
 	qtype.cc \
 	rec_channel.cc rec_channel.hh \
@@ -520,7 +564,9 @@ if HAVE_SYSTEMD
 pdns-recursor.service: pdns-recursor.service.in
 	$(AM_V_GEN)sed -e 's![@]sbindir[@]!$(sbindir)!' -e 's![@]service_user[@]!$(service_user)!' -e 's![@]service_group[@]!$(service_group)!' < $< > $@
 if !HAVE_SYSTEMD_WITH_RUNTIME_DIR_ENV
+if HAVE_SYSTEMD_PERCENT_T
 	$(AM_V_GEN)sed -e 's!/pdns_recursor!& --socket-dir=%t/pdns-recursor!' -i $@
+endif
 endif
 if !HAVE_SYSTEMD_LOCK_PERSONALITY
 	$(AM_V_GEN)perl -ni -e 'print unless /^LockPersonality/' $@
@@ -580,10 +626,13 @@ endif
 pdns-recursor@.service: pdns-recursor.service
 	$(AM_V_GEN)sed -e 's!/pdns_recursor!& --config-name=%i!' \
 	  -e 's!Recursor!& %i!' \
-	  -e 's!RuntimeDirectory=.*!&-%i!' \
+	  -e 's!SyslogIdentifier=.*!&-%i!' \
 	  < $< > $@
+if HAVE_SYSTEMD_PERCENT_T
+	$(AM_V_GEN)sed -e 's!RuntimeDirectory=.*!&-%i!' -i $@
 if !HAVE_SYSTEMD_WITH_RUNTIME_DIR_ENV
 	$(AM_V_GEN)sed -e 's!--socket-dir=[^ ]\+!&-%i !' -i $@
+endif
 endif
 
 systemdsystemunitdir = $(SYSTEMD_DIR)

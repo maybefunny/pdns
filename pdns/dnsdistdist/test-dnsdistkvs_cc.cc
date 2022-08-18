@@ -307,7 +307,7 @@ BOOST_AUTO_TEST_CASE(test_LMDB) {
   ComboAddress lc("192.0.2.1:53");
   ComboAddress rem("192.0.2.128:42");
   PacketBuffer packet(sizeof(dnsheader));
-  auto proto = DNSQuestion::Protocol::DoUDP;
+  auto proto = dnsdist::Protocol::DoUDP;
   struct timespec queryRealTime;
   gettime(&queryRealTime, true);
   struct timespec expiredTime;
@@ -325,9 +325,9 @@ BOOST_AUTO_TEST_CASE(test_LMDB) {
   const ComboAddress firstRangeAddr4("192.0.2.1:0");
   const ComboAddress lastRangeAddr4("192.0.2.1:16383");
 
-  const string dbPath("/tmp/test_lmdb.XXXXXX");
+  string dbPath("/tmp/test_lmdb.XXXXXX");
   {
-    MDBEnv env(dbPath.c_str(), MDB_NOSUBDIR, 0600);
+    MDBEnv env(dbPath.c_str(), MDB_NOSUBDIR, 0600, 50);
     auto transaction = env.getRWTransaction();
     auto dbi = transaction->openDB("db-name", MDB_CREATE);
     transaction->put(dbi, MDBInVal(std::string(reinterpret_cast<const char*>(&rem.sin4.sin_addr.s_addr), sizeof(rem.sin4.sin_addr.s_addr))), MDBInVal("this is the value for the remote addr"));
@@ -341,7 +341,7 @@ BOOST_AUTO_TEST_CASE(test_LMDB) {
   }
 
   {
-    MDBEnv env(dbPath.c_str(), MDB_NOSUBDIR, 0600);
+    MDBEnv env(dbPath.c_str(), MDB_NOSUBDIR, 0600, 50);
     auto transaction = env.getRWTransaction();
     auto dbi = transaction->openDB("range-db-name", MDB_CREATE);
     /* range-based lookups */
@@ -354,12 +354,17 @@ BOOST_AUTO_TEST_CASE(test_LMDB) {
     transaction->commit();
   }
 
-  auto lmdb = std::unique_ptr<KeyValueStore>(new LMDBKVStore(dbPath, "db-name"));
+  std::unique_ptr<KeyValueStore> lmdb = std::make_unique<LMDBKVStore>(dbPath, "db-name");
   doKVSChecks(lmdb, lc, rem, dq, plaintextDomain);
   lmdb.reset();
 
-  lmdb = std::unique_ptr<KeyValueStore>(new LMDBKVStore(dbPath, "range-db-name"));
+  lmdb = std::make_unique<LMDBKVStore>(dbPath, "range-db-name");
   doKVSRangeChecks(lmdb);
+
+  unlink(dbPath.c_str());
+  dbPath += "-lock";
+  unlink(dbPath.c_str());
+
   /*
   std::string value;
   DTime dt;
@@ -387,7 +392,7 @@ BOOST_AUTO_TEST_CASE(test_CDB) {
   ComboAddress lc("192.0.2.1:53");
   ComboAddress rem("192.0.2.128:42");
   PacketBuffer packet(sizeof(dnsheader));
-  auto proto = DNSQuestion::Protocol::DoUDP;
+  auto proto = dnsdist::Protocol::DoUDP;
   struct timespec queryRealTime;
   gettime(&queryRealTime, true);
   struct timespec expiredTime;
@@ -414,8 +419,10 @@ BOOST_AUTO_TEST_CASE(test_CDB) {
     writer.close();
   }
 
-  auto cdb = std::unique_ptr<KeyValueStore>(new CDBKVStore(db, 0));
+  std::unique_ptr<KeyValueStore> cdb = std::make_unique<CDBKVStore>(db, 0);
   doKVSChecks(cdb, lc, rem, dq, plaintextDomain);
+
+  unlink(db);
 
   /*
   std::string value;

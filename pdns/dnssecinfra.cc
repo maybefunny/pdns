@@ -33,7 +33,7 @@
 #include "iputils.hh"
 
 #include <boost/algorithm/string.hpp>
-#include "dnssecinfra.hh" 
+#include "dnssecinfra.hh"
 #include "dnsseckeeper.hh"
 #include <openssl/hmac.h>
 #include <openssl/sha.h>
@@ -55,7 +55,7 @@ std::unique_ptr<DNSCryptoKeyEngine> DNSCryptoKeyEngine::makeFromISCFile(DNSKEYRe
   if(!fp) {
     throw runtime_error("Unable to read file '"+string(fname)+"' for generating DNS Private Key");
   }
-  
+
   while(stringfgets(fp.get(), sline)) {
     isc += sline;
   }
@@ -102,7 +102,7 @@ std::unique_ptr<DNSCryptoKeyEngine> DNSCryptoKeyEngine::makeFromISCString(DNSKEY
   map<string, string> stormap;
 
   while (std::getline(str, sline)) {
-    tie(key,value) = splitField(sline, ':');
+    std::tie(key,value) = splitField(sline, ':');
     boost::trim(value);
 
     toLowerInPlace(key);
@@ -123,7 +123,7 @@ std::unique_ptr<DNSCryptoKeyEngine> DNSCryptoKeyEngine::makeFromISCString(DNSKEY
       }
       else if (it->second == KeyTypes::numeric) {
         try {
-          unsigned int num = pdns_stou(value);
+          auto num = pdns::checked_stoi<unsigned int>(value);
           stormap[key] = std::to_string(num);
           if (key == "algorithm") {
             algorithm = num;
@@ -157,7 +157,7 @@ std::unique_ptr<DNSCryptoKeyEngine> DNSCryptoKeyEngine::makeFromISCString(DNSKEY
     if (stormap.count("pin") == 0) {
       stormap["pin"] = "";
     }
-    dpk = PKCS11DNSCryptoKeyEngine::maker(algorithm); 
+    dpk = PKCS11DNSCryptoKeyEngine::maker(algorithm);
 #else
     throw PDNSException("Cannot load PKCS#11 key without support for it");
 #endif
@@ -168,18 +168,29 @@ std::unique_ptr<DNSCryptoKeyEngine> DNSCryptoKeyEngine::makeFromISCString(DNSKEY
   return dpk;
 }
 
+std::unique_ptr<DNSCryptoKeyEngine> DNSCryptoKeyEngine::makeFromPEMFile(DNSKEYRecordContent& drc, const std::string& filename, std::FILE& fp, const uint8_t algorithm)
+{
+  auto maker = DNSCryptoKeyEngine::make(algorithm);
+  maker->createFromPEMFile(drc, filename, fp);
+  return maker;
+}
+
 std::string DNSCryptoKeyEngine::convertToISC() const
 {
   storvector_t storvector = this->convertToISCVector();
   ostringstream ret;
-  ret<<"Private-key-format: v1.2\n";
-  for(const storvector_t::value_type& value :  storvector) {
-    if(value.first != "Algorithm" && value.first != "PIN" && 
+  ret << "Private-key-format: v1.2\n";
+  for (const storvector_t::value_type& value : storvector) {
+    // clang-format off
+    if(value.first != "Algorithm" && value.first != "PIN" &&
        value.first != "Slot" && value.first != "Engine" &&
-       value.first != "Label" && value.first != "PubLabel")
-      ret<<value.first<<": "<<Base64Encode(value.second)<<"\n";
-    else
-      ret<<value.first<<": "<<value.second<<"\n";
+       value.first != "Label" && value.first != "PubLabel") {
+      ret << value.first << ": " << Base64Encode(value.second) << "\n";
+    }
+    else {
+      ret << value.first << ": " << value.second << "\n";
+    }
+    // clang-format on
   }
   return ret.str();
 }
@@ -187,12 +198,13 @@ std::string DNSCryptoKeyEngine::convertToISC() const
 std::unique_ptr<DNSCryptoKeyEngine> DNSCryptoKeyEngine::make(unsigned int algo)
 {
   const makers_t& makers = getMakers();
-  makers_t::const_iterator iter = makers.find(algo);
-  if (iter != makers.cend())
+
+  auto iter = makers.find(algo);
+  if (iter != makers.cend()) {
     return (iter->second)(algo);
-  else {
-    throw runtime_error("Request to create key object for unknown algorithm number "+std::to_string(algo));
   }
+
+  throw runtime_error("Request to create key object for unknown algorithm number " + std::to_string(algo));
 }
 
 /**
@@ -205,7 +217,7 @@ vector<pair<uint8_t, string>> DNSCryptoKeyEngine::listAllAlgosWithBackend()
   vector<pair<uint8_t, string>> ret;
   for (auto const& value : getMakers()) {
     auto dcke = value.second(value.first);
-    ret.push_back(make_pair(value.first, dcke->getName()));
+    ret.emplace_back(value.first, dcke->getName());
   }
   return ret;
 }
@@ -213,10 +225,10 @@ vector<pair<uint8_t, string>> DNSCryptoKeyEngine::listAllAlgosWithBackend()
 void DNSCryptoKeyEngine::report(unsigned int algo, maker_t* maker, bool fallback)
 {
   getAllMakers()[algo].push_back(maker);
-  if(getMakers().count(algo) && fallback) {
+  if (getMakers().count(algo) != 0 && fallback) {
     return;
   }
-  getMakers()[algo]=maker;
+  getMakers()[algo] = maker;
 }
 
 bool DNSCryptoKeyEngine::testAll()
@@ -229,7 +241,7 @@ bool DNSCryptoKeyEngine::testAll()
 
       for(maker_t* signer :  value.second) {
         // multi_map<unsigned int, maker_t*> bestSigner, bestVerifier;
-        
+
         for(maker_t* verifier :  value.second) {
           try {
             testMakers(value.first, creator, signer, verifier);
@@ -276,7 +288,7 @@ void DNSCryptoKeyEngine::testMakers(unsigned int algo, maker_t* creator, maker_t
   auto dckeSign = signer(algo);
   auto dckeVerify = verifier(algo);
 
-  cerr<<"Testing algorithm "<<algo<<": '"<<dckeCreate->getName()<<"' ->'"<<dckeSign->getName()<<"' -> '"<<dckeVerify->getName()<<"' ";
+  cout<<"Testing algorithm "<<algo<<"("<<DNSSECKeeper::algorithm2name(algo)<<"): '"<<dckeCreate->getName()<<"' ->'"<<dckeSign->getName()<<"' -> '"<<dckeVerify->getName()<<"' ";
   unsigned int bits;
   if(algo <= 10)
     bits=1024;
@@ -292,21 +304,21 @@ void DNSCryptoKeyEngine::testMakers(unsigned int algo, maker_t* creator, maker_t
   DTime dt; dt.set();
   for(unsigned int n = 0; n < 100; ++n)
     dckeCreate->create(bits);
-  cerr<<"("<<dckeCreate->getBits()<<" bits) ";
+  cout<<"("<<dckeCreate->getBits()<<" bits) ";
   unsigned int udiffCreate = dt.udiff() / 100;
 
   { // FIXME: this block copy/pasted from makeFromISCString
     DNSKEYRecordContent dkrc;
-    int algorithm = 0;
+    unsigned int algorithm = 0;
     string sline, key, value, raw;
     std::istringstream str(dckeCreate->convertToISC());
     map<string, string> stormap;
 
     while(std::getline(str, sline)) {
-      tie(key,value)=splitField(sline, ':');
+      std::tie(key,value)=splitField(sline, ':');
       boost::trim(value);
       if(pdns_iequals(key,"algorithm")) {
-        algorithm = pdns_stou(value);
+        pdns::checked_stoi_into(algorithm, value);
         stormap["algorithm"]=std::to_string(algorithm);
         continue;
       } else if (pdns_iequals(key,"pin")) {
@@ -336,13 +348,13 @@ void DNSCryptoKeyEngine::testMakers(unsigned int algo, maker_t* creator, maker_t
   }
 
   string message("Hi! How is life?");
-  
+
   string signature;
   dt.set();
   for(unsigned int n = 0; n < 100; ++n)
     signature = dckeSign->sign(message);
   unsigned int udiffSign= dt.udiff()/100, udiffVerify;
-  
+
   dckeVerify->fromPublicKeyString(dckeSign->getPublicKeyString());
   if (dckeVerify->getPublicKeyString().compare(dckeSign->getPublicKeyString())) {
     throw runtime_error("Comparison of public key loaded into verifier produced by signer failed");
@@ -354,7 +366,7 @@ void DNSCryptoKeyEngine::testMakers(unsigned int algo, maker_t* creator, maker_t
 
   if(verified) {
     udiffVerify = dt.udiff() / 100;
-    cerr<<"Signature & verify ok, create "<<udiffCreate<<"usec, signature "<<udiffSign<<"usec, verify "<<udiffVerify<<"usec"<<endl;
+    cout<<"Signature & verify ok, create "<<udiffCreate<<"usec, signature "<<udiffSign<<"usec, verify "<<udiffVerify<<"usec"<<endl;
   }
   else {
     throw runtime_error("Verification of creator "+dckeCreate->getName()+" with signer "+dckeSign->getName()+" and verifier "+dckeVerify->getName()+" failed");
@@ -366,25 +378,6 @@ std::unique_ptr<DNSCryptoKeyEngine> DNSCryptoKeyEngine::makeFromPublicKeyString(
   auto dpk = make(algorithm);
   dpk->fromPublicKeyString(content);
   return dpk;
-}
-
-
-std::unique_ptr<DNSCryptoKeyEngine> DNSCryptoKeyEngine::makeFromPEMString(DNSKEYRecordContent& drc, const std::string& raw)
-{
-  
-  for (const makers_t::value_type& val : getMakers())
-  {
-    std::unique_ptr<DNSCryptoKeyEngine> ret=nullptr;
-    try {
-      ret = val.second(val.first);
-      ret->fromPEMString(drc, raw);
-      return ret;
-    }
-    catch(...)
-    {
-    }
-  }
-  return nullptr;
 }
 
 /**
@@ -400,12 +393,21 @@ std::unique_ptr<DNSCryptoKeyEngine> DNSCryptoKeyEngine::makeFromPEMString(DNSKEY
  *                            purposes, as the authoritative server correctly
  *                            sets qname to the wildcard.
  */
-string getMessageForRRSET(const DNSName& qname, const RRSIGRecordContent& rrc, const sortedRecords_t& signRecords, bool processRRSIGLabels)
+string getMessageForRRSET(const DNSName& qname, const RRSIGRecordContent& rrc, const sortedRecords_t& signRecords, bool processRRSIGLabels, bool includeRRSIG_RDATA)
 {
   string toHash;
-  toHash.append(const_cast<RRSIGRecordContent&>(rrc).serialize(g_rootdnsname, true, true));
-  toHash.resize(toHash.size() - rrc.d_signature.length()); // chop off the end, don't sign the signature!
 
+  // dnssec: signature = sign(RRSIG_RDATA | RR(1) | RR(2)... )
+  // From RFC 4034
+  // RRSIG_RDATA is the wire format of the RRSIG RDATA fields
+  //             with the Signer's Name field in canonical form and
+  //             the Signature field excluded;
+  // zonemd: digest = hash( RR(1) | RR(2) | RR(3) | ... ), so skip RRSIG_RDATA
+
+  if (includeRRSIG_RDATA) {
+    toHash.append(const_cast<RRSIGRecordContent&>(rrc).serialize(g_rootdnsname, true, true));
+    toHash.resize(toHash.size() - rrc.d_signature.length()); // chop off the end, don't sign the signature!
+  }
   string nameToHash(qname.toDNSStringLC());
 
   if (processRRSIGLabels) {
@@ -438,7 +440,7 @@ string getMessageForRRSET(const DNSName& qname, const RRSIGRecordContent& rrc, c
     toHash.append((char*)&tmp, 2);
     toHash.append(rdata);
   }
-  
+
   return toHash;
 }
 
@@ -480,9 +482,9 @@ bool DNSCryptoKeyEngine::isDigestSupported(uint8_t digest)
 DSRecordContent makeDSFromDNSKey(const DNSName& qname, const DNSKEYRecordContent& drc, uint8_t digest)
 {
   string toHash;
-  toHash.assign(qname.toDNSStringLC()); 
+  toHash.assign(qname.toDNSStringLC());
   toHash.append(const_cast<DNSKEYRecordContent&>(drc).serialize(DNSName(), true, true));
-  
+
   DSRecordContent dsrc;
   try {
     unsigned int algo = digestToAlgorithmNumber(digest);
@@ -492,7 +494,7 @@ DSRecordContent makeDSFromDNSKey(const DNSName& qname, const DNSKEYRecordContent
   catch(const std::exception& e) {
     throw std::runtime_error("Asked to create (C)DS record of unknown digest type " + std::to_string(digest));
   }
-  
+
   dsrc.d_algorithm = drc.d_algorithm;
   dsrc.d_digesttype = digest;
   dsrc.d_tag = const_cast<DNSKEYRecordContent&>(drc).getTag();
@@ -632,27 +634,6 @@ static string calculateHMAC(const std::string& key, const std::string& text, TSI
   return string((char*) hash, outlen);
 }
 
-static bool constantTimeStringEquals(const std::string& a, const std::string& b)
-{
-  if (a.size() != b.size()) {
-    return false;
-  }
-  const size_t size = a.size();
-#ifdef HAVE_CRYPTO_MEMCMP
-  return CRYPTO_memcmp(a.c_str(), b.c_str(), size) == 0;
-#else
-  const volatile unsigned char *_a = (const volatile unsigned char *) a.c_str();
-  const volatile unsigned char *_b = (const volatile unsigned char *) b.c_str();
-  unsigned char res = 0;
-
-  for (size_t idx = 0; idx < size; idx++) {
-    res |= _a[idx] ^ _b[idx];
-  }
-
-  return res == 0;
-#endif
-}
-
 static string makeTSIGPayload(const string& previous, const char* packetBegin, size_t packetSize, const DNSName& tsigKeyName, const TSIGRecordContent& trc, bool timersonly)
 {
   string message;
@@ -674,8 +655,8 @@ static string makeTSIGPayload(const string& previous, const char* packetBegin, s
     dw.xfr32BitInt(0);    // TTL
     dw.xfrName(trc.d_algoName.makeLowerCase(), false);
   }
-  
-  uint32_t now = trc.d_time; 
+
+  uint32_t now = trc.d_time;
   dw.xfr48BitInt(now);
   dw.xfr16BitInt(trc.d_fudge); // fudge
   if(!timersonly) {
@@ -694,7 +675,7 @@ static string makeTSIGMessageFromTSIGPacket(const string& opacket, unsigned int 
 
   packet.resize(tsigOffset); // remove the TSIG record at the end as per RFC2845 3.4.1
   packet[(dnsHeaderOffset + sizeof(struct dnsheader))-1]--; // Decrease ARCOUNT because we removed the TSIG RR in the previous line.
-  
+
 
   // Replace the message ID with the original message ID from the TSIG record.
   // This is needed for forwarded DNS Update as they get a new ID when forwarding (section 6.1 of RFC2136). The TSIG record stores the original ID and the

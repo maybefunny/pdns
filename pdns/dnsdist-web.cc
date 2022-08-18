@@ -38,7 +38,6 @@
 #include "dnsdist-web.hh"
 #include "dolog.hh"
 #include "gettime.hh"
-#include "htmlfiles.h"
 #include "threadname.hh"
 #include "sstuff.hh"
 
@@ -50,18 +49,48 @@ struct WebserverConfig
   }
 
   NetmaskGroup acl;
-  std::string password;
-  std::string apiKey;
-  boost::optional<std::map<std::string, std::string> > customHeaders;
+  std::unique_ptr<CredentialsHolder> password;
+  std::unique_ptr<CredentialsHolder> apiKey;
+  boost::optional<std::unordered_map<std::string, std::string> > customHeaders;
+  bool apiRequiresAuthentication{true};
   bool statsRequireAuthentication{true};
 };
 
 bool g_apiReadWrite{false};
 LockGuarded<WebserverConfig> g_webserverConfig;
 std::string g_apiConfigDirectory;
-static const MetricDefinitionStorage s_metricDefinitions;
 
 static ConcurrentConnectionManager s_connManager(100);
+
+std::string getWebserverConfig()
+{
+  ostringstream out;
+
+  {
+    auto config = g_webserverConfig.lock();
+    out << "Current web server configuration:" << endl;
+    out << "ACL: " << config->acl.toString() << endl;
+    out << "Custom headers: ";
+    if (config->customHeaders) {
+      out << endl;
+      for (const auto& header : *config->customHeaders) {
+        out << " - " << header.first << ": " << header.second << endl;
+      }
+    }
+    else {
+      out << "None" << endl;
+    }
+    out << "API requires authentication: " << (config->apiRequiresAuthentication ? "yes" : "no") << endl;
+    out << "Statistics require authentication: " << (config->statsRequireAuthentication ? "yes" : "no") << endl;
+    out << "Password: " << (config->password ? "set" : "unset") << endl;
+    out << "API key: " << (config->apiKey ? "set" : "unset") << endl;
+  }
+  out << "API writable: " << (g_apiReadWrite ? "yes" : "no") << endl;
+  out << "API configuration directory: " << g_apiConfigDirectory << endl;
+  out << "Maximum concurrent connections: " << s_connManager.getMaxConcurrentConnections() << endl;
+
+  return out.str();
+}
 
 class WebClientConnection
 {
@@ -101,60 +130,95 @@ private:
   Socket d_socket;
 };
 
-const std::map<std::string, MetricDefinition> MetricDefinitionStorage::metrics{
-  { "responses",              MetricDefinition(PrometheusMetricType::counter, "Number of responses received from backends") },
-  { "servfail-responses",     MetricDefinition(PrometheusMetricType::counter, "Number of SERVFAIL answers received from backends") },
-  { "queries",                MetricDefinition(PrometheusMetricType::counter, "Number of received queries")},
-  { "frontend-nxdomain",      MetricDefinition(PrometheusMetricType::counter, "Number of NXDomain answers sent to clients")},
-  { "frontend-servfail",      MetricDefinition(PrometheusMetricType::counter, "Number of SERVFAIL answers sent to clients")},
-  { "frontend-noerror",       MetricDefinition(PrometheusMetricType::counter, "Number of NoError answers sent to clients")},
-  { "acl-drops",              MetricDefinition(PrometheusMetricType::counter, "Number of packets dropped because of the ACL")},
-  { "rule-drop",              MetricDefinition(PrometheusMetricType::counter, "Number of queries dropped because of a rule")},
-  { "rule-nxdomain",          MetricDefinition(PrometheusMetricType::counter, "Number of NXDomain answers returned because of a rule")},
-  { "rule-refused",           MetricDefinition(PrometheusMetricType::counter, "Number of Refused answers returned because of a rule")},
-  { "rule-servfail",          MetricDefinition(PrometheusMetricType::counter, "Number of SERVFAIL answers received because of a rule")},
-  { "rule-truncated",         MetricDefinition(PrometheusMetricType::counter, "Number of truncated answers returned because of a rule")},
-  { "self-answered",          MetricDefinition(PrometheusMetricType::counter, "Number of self-answered responses")},
-  { "downstream-timeouts",    MetricDefinition(PrometheusMetricType::counter, "Number of queries not answered in time by a backend")},
-  { "downstream-send-errors", MetricDefinition(PrometheusMetricType::counter, "Number of errors when sending a query to a backend")},
-  { "trunc-failures",         MetricDefinition(PrometheusMetricType::counter, "Number of errors encountered while truncating an answer")},
-  { "no-policy",              MetricDefinition(PrometheusMetricType::counter, "Number of queries dropped because no server was available")},
-  { "latency0-1",             MetricDefinition(PrometheusMetricType::counter, "Number of queries answered in less than 1ms")},
-  { "latency1-10",            MetricDefinition(PrometheusMetricType::counter, "Number of queries answered in 1-10 ms")},
-  { "latency10-50",           MetricDefinition(PrometheusMetricType::counter, "Number of queries answered in 10-50 ms")},
-  { "latency50-100",          MetricDefinition(PrometheusMetricType::counter, "Number of queries answered in 50-100 ms")},
-  { "latency100-1000",        MetricDefinition(PrometheusMetricType::counter, "Number of queries answered in 100-1000 ms")},
-  { "latency-slow",           MetricDefinition(PrometheusMetricType::counter, "Number of queries answered in more than 1 second")},
-  { "latency-avg100",         MetricDefinition(PrometheusMetricType::gauge,   "Average response latency in microseconds of the last 100 packets")},
-  { "latency-avg1000",        MetricDefinition(PrometheusMetricType::gauge,   "Average response latency in microseconds of the last 1000 packets")},
-  { "latency-avg10000",       MetricDefinition(PrometheusMetricType::gauge,   "Average response latency in microseconds of the last 10000 packets")},
-  { "latency-avg1000000",     MetricDefinition(PrometheusMetricType::gauge,   "Average response latency in microseconds of the last 1000000 packets")},
-  { "uptime",                 MetricDefinition(PrometheusMetricType::gauge,   "Uptime of the dnsdist process in seconds")},
-  { "real-memory-usage",      MetricDefinition(PrometheusMetricType::gauge,   "Current memory usage in bytes")},
-  { "noncompliant-queries",   MetricDefinition(PrometheusMetricType::counter, "Number of queries dropped as non-compliant")},
-  { "noncompliant-responses", MetricDefinition(PrometheusMetricType::counter, "Number of answers from a backend dropped as non-compliant")},
-  { "rdqueries",              MetricDefinition(PrometheusMetricType::counter, "Number of received queries with the recursion desired bit set")},
-  { "empty-queries",          MetricDefinition(PrometheusMetricType::counter, "Number of empty queries received from clients")},
-  { "cache-hits",             MetricDefinition(PrometheusMetricType::counter, "Number of times an answer was retrieved from cache")},
-  { "cache-misses",           MetricDefinition(PrometheusMetricType::counter, "Number of times an answer not found in the cache")},
-  { "cpu-iowait",             MetricDefinition(PrometheusMetricType::counter, "Time waiting for I/O to complete by the whole system, in units of USER_HZ")},
-  { "cpu-user-msec",          MetricDefinition(PrometheusMetricType::counter, "Milliseconds spent by dnsdist in the user state")},
-  { "cpu-steal",              MetricDefinition(PrometheusMetricType::counter, "Stolen time, which is the time spent by the whole system in other operating systems when running in a virtualized environment, in units of USER_HZ")},
-  { "cpu-sys-msec",           MetricDefinition(PrometheusMetricType::counter, "Milliseconds spent by dnsdist in the system state")},
-  { "fd-usage",               MetricDefinition(PrometheusMetricType::gauge,   "Number of currently used file descriptors")},
-  { "dyn-blocked",            MetricDefinition(PrometheusMetricType::counter, "Number of queries dropped because of a dynamic block")},
-  { "dyn-block-nmg-size",     MetricDefinition(PrometheusMetricType::gauge,   "Number of dynamic blocks entries") },
-  { "security-status",        MetricDefinition(PrometheusMetricType::gauge,   "Security status of this software. 0=unknown, 1=OK, 2=upgrade recommended, 3=upgrade mandatory") },
-  { "doh-query-pipe-full",    MetricDefinition(PrometheusMetricType::counter, "Number of DoH queries dropped because the internal pipe used to distribute queries was full") },
-  { "doh-response-pipe-full", MetricDefinition(PrometheusMetricType::counter, "Number of DoH responses dropped because the internal pipe used to distribute responses was full") },
-  { "udp-in-errors",          MetricDefinition(PrometheusMetricType::counter, "From /proc/net/snmp InErrors") },
-  { "udp-noport-errors",      MetricDefinition(PrometheusMetricType::counter, "From /proc/net/snmp NoPorts") },
-  { "udp-recvbuf-errors",     MetricDefinition(PrometheusMetricType::counter, "From /proc/net/snmp RcvbufErrors") },
-  { "udp-sndbuf-errors",      MetricDefinition(PrometheusMetricType::counter, "From /proc/net/snmp SndbufErrors") },
-  { "tcp-listen-overflows",   MetricDefinition(PrometheusMetricType::counter, "From /proc/net/netstat ListenOverflows") },
-  { "proxy-protocol-invalid", MetricDefinition(PrometheusMetricType::counter, "Number of queries dropped because of an invalid Proxy Protocol header") },
-};
+#ifndef DISABLE_PROMETHEUS
+static MetricDefinitionStorage s_metricDefinitions;
 
+std::map<std::string, MetricDefinition> MetricDefinitionStorage::metrics{
+  { "responses",                             MetricDefinition(PrometheusMetricType::counter, "Number of responses received from backends") },
+  { "servfail-responses",                    MetricDefinition(PrometheusMetricType::counter, "Number of SERVFAIL answers received from backends") },
+  { "queries",                               MetricDefinition(PrometheusMetricType::counter, "Number of received queries")},
+  { "frontend-nxdomain",                     MetricDefinition(PrometheusMetricType::counter, "Number of NXDomain answers sent to clients")},
+  { "frontend-servfail",                     MetricDefinition(PrometheusMetricType::counter, "Number of SERVFAIL answers sent to clients")},
+  { "frontend-noerror",                      MetricDefinition(PrometheusMetricType::counter, "Number of NoError answers sent to clients")},
+  { "acl-drops",                             MetricDefinition(PrometheusMetricType::counter, "Number of packets dropped because of the ACL")},
+  { "rule-drop",                             MetricDefinition(PrometheusMetricType::counter, "Number of queries dropped because of a rule")},
+  { "rule-nxdomain",                         MetricDefinition(PrometheusMetricType::counter, "Number of NXDomain answers returned because of a rule")},
+  { "rule-refused",                          MetricDefinition(PrometheusMetricType::counter, "Number of Refused answers returned because of a rule")},
+  { "rule-servfail",                         MetricDefinition(PrometheusMetricType::counter, "Number of SERVFAIL answers received because of a rule")},
+  { "rule-truncated",                        MetricDefinition(PrometheusMetricType::counter, "Number of truncated answers returned because of a rule")},
+  { "self-answered",                         MetricDefinition(PrometheusMetricType::counter, "Number of self-answered responses")},
+  { "downstream-timeouts",                   MetricDefinition(PrometheusMetricType::counter, "Number of queries not answered in time by a backend")},
+  { "downstream-send-errors",                MetricDefinition(PrometheusMetricType::counter, "Number of errors when sending a query to a backend")},
+  { "trunc-failures",                        MetricDefinition(PrometheusMetricType::counter, "Number of errors encountered while truncating an answer")},
+  { "no-policy",                             MetricDefinition(PrometheusMetricType::counter, "Number of queries dropped because no server was available")},
+  { "latency0-1",                            MetricDefinition(PrometheusMetricType::counter, "Number of queries answered in less than 1ms")},
+  { "latency1-10",                           MetricDefinition(PrometheusMetricType::counter, "Number of queries answered in 1-10 ms")},
+  { "latency10-50",                          MetricDefinition(PrometheusMetricType::counter, "Number of queries answered in 10-50 ms")},
+  { "latency50-100",                         MetricDefinition(PrometheusMetricType::counter, "Number of queries answered in 50-100 ms")},
+  { "latency100-1000",                       MetricDefinition(PrometheusMetricType::counter, "Number of queries answered in 100-1000 ms")},
+  { "latency-slow",                          MetricDefinition(PrometheusMetricType::counter, "Number of queries answered in more than 1 second")},
+  { "latency-avg100",                        MetricDefinition(PrometheusMetricType::gauge,   "Average response latency in microseconds of the last 100 packets")},
+  { "latency-avg1000",                       MetricDefinition(PrometheusMetricType::gauge,   "Average response latency in microseconds of the last 1000 packets")},
+  { "latency-avg10000",                      MetricDefinition(PrometheusMetricType::gauge,   "Average response latency in microseconds of the last 10000 packets")},
+  { "latency-avg1000000",                    MetricDefinition(PrometheusMetricType::gauge,   "Average response latency in microseconds of the last 1000000 packets")},
+  { "latency-tcp-avg100",                    MetricDefinition(PrometheusMetricType::gauge,   "Average response latency, in microseconds, of the last 100 packets received over TCP")},
+  { "latency-tcp-avg1000",                   MetricDefinition(PrometheusMetricType::gauge,   "Average response latency, in microseconds, of the last 1000 packets received over TCP")},
+  { "latency-tcp-avg10000",                  MetricDefinition(PrometheusMetricType::gauge,   "Average response latency, in microseconds, of the last 10000 packets received over TCP")},
+  { "latency-tcp-avg1000000",                MetricDefinition(PrometheusMetricType::gauge,   "Average response latency, in microseconds, of the last 1000000 packets received over TCP")},
+  { "latency-dot-avg100",                    MetricDefinition(PrometheusMetricType::gauge,   "Average response latency, in microseconds, of the last 100 packets received over DoT")},
+  { "latency-dot-avg1000",                   MetricDefinition(PrometheusMetricType::gauge,   "Average response latency, in microseconds, of the last 1000 packets received over DoT")},
+  { "latency-dot-avg10000",                  MetricDefinition(PrometheusMetricType::gauge,   "Average response latency, in microseconds, of the last 10000 packets received over DoT")},
+  { "latency-dot-avg1000000",                MetricDefinition(PrometheusMetricType::gauge,   "Average response latency, in microseconds, of the last 1000000 packets received over DoT")},
+  { "latency-doh-avg100",                    MetricDefinition(PrometheusMetricType::gauge,   "Average response latency, in microseconds, of the last 100 packets received over DoH")},
+  { "latency-doh-avg1000",                   MetricDefinition(PrometheusMetricType::gauge,   "Average response latency, in microseconds, of the last 1000 packets received over DoH")},
+  { "latency-doh-avg10000",                  MetricDefinition(PrometheusMetricType::gauge,   "Average response latency, in microseconds, of the last 10000 packets received over DoH")},
+  { "latency-doh-avg1000000",                MetricDefinition(PrometheusMetricType::gauge,   "Average response latency, in microseconds, of the last 1000000 packets received over DoH")},
+  { "uptime",                                MetricDefinition(PrometheusMetricType::gauge,   "Uptime of the dnsdist process in seconds")},
+  { "real-memory-usage",                     MetricDefinition(PrometheusMetricType::gauge,   "Current memory usage in bytes")},
+  { "noncompliant-queries",                  MetricDefinition(PrometheusMetricType::counter, "Number of queries dropped as non-compliant")},
+  { "noncompliant-responses",                MetricDefinition(PrometheusMetricType::counter, "Number of answers from a backend dropped as non-compliant")},
+  { "rdqueries",                             MetricDefinition(PrometheusMetricType::counter, "Number of received queries with the recursion desired bit set")},
+  { "empty-queries",                         MetricDefinition(PrometheusMetricType::counter, "Number of empty queries received from clients")},
+  { "cache-hits",                            MetricDefinition(PrometheusMetricType::counter, "Number of times an answer was retrieved from cache")},
+  { "cache-misses",                          MetricDefinition(PrometheusMetricType::counter, "Number of times an answer not found in the cache")},
+  { "cpu-iowait",                            MetricDefinition(PrometheusMetricType::counter, "Time waiting for I/O to complete by the whole system, in units of USER_HZ")},
+  { "cpu-user-msec",                         MetricDefinition(PrometheusMetricType::counter, "Milliseconds spent by dnsdist in the user state")},
+  { "cpu-steal",                             MetricDefinition(PrometheusMetricType::counter, "Stolen time, which is the time spent by the whole system in other operating systems when running in a virtualized environment, in units of USER_HZ")},
+  { "cpu-sys-msec",                          MetricDefinition(PrometheusMetricType::counter, "Milliseconds spent by dnsdist in the system state")},
+  { "fd-usage",                              MetricDefinition(PrometheusMetricType::gauge,   "Number of currently used file descriptors")},
+  { "dyn-blocked",                           MetricDefinition(PrometheusMetricType::counter, "Number of queries dropped because of a dynamic block")},
+  { "dyn-block-nmg-size",                    MetricDefinition(PrometheusMetricType::gauge,   "Number of dynamic blocks entries") },
+  { "security-status",                       MetricDefinition(PrometheusMetricType::gauge,   "Security status of this software. 0=unknown, 1=OK, 2=upgrade recommended, 3=upgrade mandatory") },
+  { "doh-query-pipe-full",                   MetricDefinition(PrometheusMetricType::counter, "Number of DoH queries dropped because the internal pipe used to distribute queries was full") },
+  { "doh-response-pipe-full",                MetricDefinition(PrometheusMetricType::counter, "Number of DoH responses dropped because the internal pipe used to distribute responses was full") },
+  { "outgoing-doh-query-pipe-full",          MetricDefinition(PrometheusMetricType::counter, "Number of outgoing DoH queries dropped because the internal pipe used to distribute queries was full") },
+  { "tcp-query-pipe-full",                   MetricDefinition(PrometheusMetricType::counter, "Number of TCP queries dropped because the internal pipe used to distribute queries was full") },
+  { "tcp-cross-protocol-query-pipe-full",    MetricDefinition(PrometheusMetricType::counter, "Number of TCP cross-protocol queries dropped because the internal pipe used to distribute queries was full") },
+  { "tcp-cross-protocol-response-pipe-full", MetricDefinition(PrometheusMetricType::counter, "Number of TCP cross-protocol responses dropped because the internal pipe used to distribute queries was full") },
+  { "udp-in-errors",                         MetricDefinition(PrometheusMetricType::counter, "From /proc/net/snmp InErrors") },
+  { "udp-noport-errors",                     MetricDefinition(PrometheusMetricType::counter, "From /proc/net/snmp NoPorts") },
+  { "udp-recvbuf-errors",                    MetricDefinition(PrometheusMetricType::counter, "From /proc/net/snmp RcvbufErrors") },
+  { "udp-sndbuf-errors",                     MetricDefinition(PrometheusMetricType::counter, "From /proc/net/snmp SndbufErrors") },
+  { "udp-in-csum-errors",                    MetricDefinition(PrometheusMetricType::counter, "From /proc/net/snmp InCsumErrors") },
+  { "udp6-in-errors",                        MetricDefinition(PrometheusMetricType::counter, "From /proc/net/snmp6 Udp6InErrors") },
+  { "udp6-recvbuf-errors",                   MetricDefinition(PrometheusMetricType::counter, "From /proc/net/snmp6 Udp6RcvbufErrors") },
+  { "udp6-sndbuf-errors",                    MetricDefinition(PrometheusMetricType::counter, "From /proc/net/snmp6 Udp6SndbufErrors") },
+  { "udp6-noport-errors",                    MetricDefinition(PrometheusMetricType::counter, "From /proc/net/snmp6 Udp6NoPorts") },
+  { "udp6-in-csum-errors",                   MetricDefinition(PrometheusMetricType::counter, "From /proc/net/snmp6 Udp6InCsumErrors") },
+  { "tcp-listen-overflows",                  MetricDefinition(PrometheusMetricType::counter, "From /proc/net/netstat ListenOverflows") },
+  { "proxy-protocol-invalid",                MetricDefinition(PrometheusMetricType::counter, "Number of queries dropped because of an invalid Proxy Protocol header") },
+};
+#endif /* DISABLE_PROMETHEUS */
+
+bool addMetricDefinition(const std::string& name, const std::string& type, const std::string& description) {
+#ifndef DISABLE_PROMETHEUS
+  return MetricDefinitionStorage::addMetricDefinition(name, type, description);
+#else
+  return true;
+#endif /* DISABLE_PROMETHEUS */
+}
+
+#ifndef DISABLE_WEB_CONFIG
 static bool apiWriteConfigFile(const string& filebasename, const string& content)
 {
   if (!g_apiReadWrite) {
@@ -195,22 +259,23 @@ static void apiSaveACL(const NetmaskGroup& nmg)
   string content = "setACL({" + acl + "})";
   apiWriteConfigFile("acl", content);
 }
+#endif /* DISABLE_WEB_CONFIG */
 
-static bool checkAPIKey(const YaHTTP::Request& req, const string& expectedApiKey)
+static bool checkAPIKey(const YaHTTP::Request& req, const std::unique_ptr<CredentialsHolder>& apiKey)
 {
-  if (expectedApiKey.empty()) {
+  if (!apiKey) {
     return false;
   }
 
   const auto header = req.headers.find("x-api-key");
   if (header != req.headers.end()) {
-    return (header->second == expectedApiKey);
+    return apiKey->matches(header->second);
   }
 
   return false;
 }
 
-static bool checkWebPassword(const YaHTTP::Request& req, const string &expected_password)
+static bool checkWebPassword(const YaHTTP::Request& req, const std::unique_ptr<CredentialsHolder>& password)
 {
   static const char basicStr[] = "basic ";
 
@@ -226,7 +291,10 @@ static bool checkWebPassword(const YaHTTP::Request& req, const string &expected_
     stringtok(cparts, plain, ":");
 
     if (cparts.size() == 2) {
-      return cparts[1] == expected_password;
+      if (password) {
+        return password->matches(cparts.at(1));
+      }
+      return true;
     }
   }
 
@@ -262,7 +330,7 @@ static bool handleAuthorization(const YaHTTP::Request& req)
 
   if (isAnAPIRequest(req)) {
     /* Access to the API requires a valid API key */
-    if (checkAPIKey(req, config->apiKey)) {
+    if (!config->apiRequiresAuthentication  || checkAPIKey(req, config->apiKey)) {
       return true;
     }
 
@@ -313,7 +381,7 @@ static void handleCORS(const YaHTTP::Request& req, YaHTTP::Response& resp)
   }
 }
 
-static void addSecurityHeaders(YaHTTP::Response& resp, const boost::optional<std::map<std::string, std::string> >& customHeaders)
+static void addSecurityHeaders(YaHTTP::Response& resp, const boost::optional<std::unordered_map<std::string, std::string> >& customHeaders)
 {
   static const std::vector<std::pair<std::string, std::string> > headers = {
     { "X-Content-Type-Options", "nosniff" },
@@ -334,7 +402,7 @@ static void addSecurityHeaders(YaHTTP::Response& resp, const boost::optional<std
   }
 }
 
-static void addCustomHeaders(YaHTTP::Response& resp, const boost::optional<std::map<std::string, std::string> >& customHeaders)
+static void addCustomHeaders(YaHTTP::Response& resp, const boost::optional<std::unordered_map<std::string, std::string> >& customHeaders)
 {
   if (!customHeaders)
     return;
@@ -368,6 +436,7 @@ static json11::Json::array someResponseRulesToJson(GlobalStateHolder<vector<T>>*
   return responseRules;
 }
 
+#ifndef DISABLE_PROMETHEUS
 template<typename T>
 static void addRulesToPrometheusOutput(std::ostringstream& output, GlobalStateHolder<vector<T> >& rules)
 {
@@ -414,12 +483,18 @@ static void handlePrometheus(const YaHTTP::Request& req, YaHTTP::Response& resp)
     output << "# TYPE " << prometheusMetricName << " " << prometheusTypeName << "\n";
     output << prometheusMetricName << " ";
 
-    if (const auto& val = boost::get<pdns::stat_t*>(&std::get<1>(e)))
+    if (const auto& val = boost::get<pdns::stat_t*>(&std::get<1>(e))) {
       output << (*val)->load();
-    else if (const auto& dval = boost::get<double*>(&std::get<1>(e)))
+    }
+    else if (const auto& adval = boost::get<pdns::stat_t_trait<double>*>(&std::get<1>(e))) {
+      output << (*adval)->load();
+    }
+    else if (const auto& dval = boost::get<double*>(&std::get<1>(e))) {
       output << **dval;
-    else
-      output << (*boost::get<DNSDistStats::statfunction_t>(&std::get<1>(e)))(std::get<0>(e));
+    }
+    else if (const auto& func = boost::get<DNSDistStats::statfunction_t>(&std::get<1>(e))) {
+      output << (*func)(std::get<0>(e));
+    }
 
     output << "\n";
   }
@@ -440,94 +515,111 @@ static void handlePrometheus(const YaHTTP::Request& req, YaHTTP::Response& resp)
   latency_amounts += g_stats.latencySlow; // Should be the same as latency_count
   output << "dnsdist_latency_bucket{le=\"+Inf\"} " << latency_amounts << "\n";
   output << "dnsdist_latency_sum " << g_stats.latencySum << "\n";
-  output << "dnsdist_latency_count " << getLatencyCount(std::string()) << "\n";
+  output << "dnsdist_latency_count " << g_stats.latencyCount << "\n";
 
   auto states = g_dstates.getLocal();
   const string statesbase = "dnsdist_server_";
 
-  output << "# HELP " << statesbase << "status "                      << "Whether this backend is up (1) or down (0)"                        << "\n";
-  output << "# TYPE " << statesbase << "status "                      << "gauge"                                                             << "\n";
-  output << "# HELP " << statesbase << "queries "                     << "Amount of queries relayed to server"                               << "\n";
-  output << "# TYPE " << statesbase << "queries "                     << "counter"                                                           << "\n";
-  output << "# HELP " << statesbase << "responses "                   << "Amount of responses received from this server"                     << "\n";
-  output << "# TYPE " << statesbase << "responses "                   << "counter"                                                           << "\n";
-  output << "# HELP " << statesbase << "drops "                       << "Amount of queries not answered by server"                          << "\n";
-  output << "# TYPE " << statesbase << "drops "                       << "counter"                                                           << "\n";
-  output << "# HELP " << statesbase << "latency "                     << "Server's latency when answering questions in milliseconds"         << "\n";
-  output << "# TYPE " << statesbase << "latency "                     << "gauge"                                                             << "\n";
-  output << "# HELP " << statesbase << "senderrors "                  << "Total number of OS send errors while relaying queries"             << "\n";
-  output << "# TYPE " << statesbase << "senderrors "                  << "counter"                                                           << "\n";
-  output << "# HELP " << statesbase << "outstanding "                 << "Current number of queries that are waiting for a backend response" << "\n";
-  output << "# TYPE " << statesbase << "outstanding "                 << "gauge"                                                             << "\n";
-  output << "# HELP " << statesbase << "order "                       << "The order in which this server is picked"                          << "\n";
-  output << "# TYPE " << statesbase << "order "                       << "gauge"                                                             << "\n";
-  output << "# HELP " << statesbase << "weight "                      << "The weight within the order in which this server is picked"        << "\n";
-  output << "# TYPE " << statesbase << "weight "                      << "gauge"                                                             << "\n";
-  output << "# HELP " << statesbase << "tcpdiedsendingquery "         << "The number of TCP I/O errors while sending the query"              << "\n";
-  output << "# TYPE " << statesbase << "tcpdiedsendingquery "         << "counter"                                                           << "\n";
-  output << "# HELP " << statesbase << "tcpdiedreadingresponse "      << "The number of TCP I/O errors while reading the response"           << "\n";
-  output << "# TYPE " << statesbase << "tcpdiedreadingresponse "      << "counter"                                                           << "\n";
-  output << "# HELP " << statesbase << "tcpgaveup "                   << "The number of TCP connections failing after too many attempts"     << "\n";
-  output << "# TYPE " << statesbase << "tcpgaveup "                   << "counter"                                                           << "\n";
-  output << "# HELP " << statesbase << "tcpconnecttimeouts "          << "The number of TCP connect timeouts"                                << "\n";
-  output << "# TYPE " << statesbase << "tcpconnecttimeouts "          << "counter"                                                           << "\n";
-  output << "# HELP " << statesbase << "tcpreadtimeouts "             << "The number of TCP read timeouts"                                   << "\n";
-  output << "# TYPE " << statesbase << "tcpreadtimeouts "             << "counter"                                                           << "\n";
-  output << "# HELP " << statesbase << "tcpwritetimeouts "            << "The number of TCP write timeouts"                                  << "\n";
-  output << "# TYPE " << statesbase << "tcpwritetimeouts "            << "counter"                                                           << "\n";
-  output << "# HELP " << statesbase << "tcpcurrentconnections "       << "The number of current TCP connections"                             << "\n";
-  output << "# TYPE " << statesbase << "tcpcurrentconnections "       << "gauge"                                                             << "\n";
-  output << "# HELP " << statesbase << "tcpmaxconcurrentconnections " << "The maximum number of concurrent TCP connections"                  << "\n";
-  output << "# TYPE " << statesbase << "tcpmaxconcurrentconnections " << "counter"                                                           << "\n";
-  output << "# HELP " << statesbase << "tcpnewconnections "           << "The number of established TCP connections in total"                << "\n";
-  output << "# TYPE " << statesbase << "tcpnewconnections "           << "counter"                                                           << "\n";
-  output << "# HELP " << statesbase << "tcpreusedconnections "        << "The number of times a TCP connection has been reused"              << "\n";
-  output << "# TYPE " << statesbase << "tcpreusedconnections "        << "counter"                                                           << "\n";
-  output << "# HELP " << statesbase << "tcpavgqueriesperconn "        << "The average number of queries per TCP connection"                  << "\n";
-  output << "# TYPE " << statesbase << "tcpavgqueriesperconn "        << "gauge"                                                             << "\n";
-  output << "# HELP " << statesbase << "tcpavgconnduration "          << "The average duration of a TCP connection (ms)"                     << "\n";
-  output << "# TYPE " << statesbase << "tcpavgconnduration "          << "gauge"                                                             << "\n";
+  output << "# HELP " << statesbase << "status "                          << "Whether this backend is up (1) or down (0)"                                           << "\n";
+  output << "# TYPE " << statesbase << "status "                          << "gauge"                                                                                << "\n";
+  output << "# HELP " << statesbase << "queries "                         << "Amount of queries relayed to server"                                                  << "\n";
+  output << "# TYPE " << statesbase << "queries "                         << "counter"                                                                              << "\n";
+  output << "# HELP " << statesbase << "responses "                       << "Amount of responses received from this server"                                        << "\n";
+  output << "# TYPE " << statesbase << "responses "                       << "counter"                                                                              << "\n";
+  output << "# HELP " << statesbase << "noncompliantresponses "           << "Amount of non-compliant responses received from this server"                          << "\n";
+  output << "# TYPE " << statesbase << "noncompliantresponses "           << "counter"                                                                              << "\n";
+  output << "# HELP " << statesbase << "drops "                           << "Amount of queries not answered by server"                                             << "\n";
+  output << "# TYPE " << statesbase << "drops "                           << "counter"                                                                              << "\n";
+  output << "# HELP " << statesbase << "latency "                         << "Server's latency when answering questions in milliseconds"                            << "\n";
+  output << "# TYPE " << statesbase << "latency "                         << "gauge"                                                                                << "\n";
+  output << "# HELP " << statesbase << "senderrors "                      << "Total number of OS send errors while relaying queries"                                << "\n";
+  output << "# TYPE " << statesbase << "senderrors "                      << "counter"                                                                              << "\n";
+  output << "# HELP " << statesbase << "outstanding "                     << "Current number of queries that are waiting for a backend response"                    << "\n";
+  output << "# TYPE " << statesbase << "outstanding "                     << "gauge"                                                                                << "\n";
+  output << "# HELP " << statesbase << "order "                           << "The order in which this server is picked"                                             << "\n";
+  output << "# TYPE " << statesbase << "order "                           << "gauge"                                                                                << "\n";
+  output << "# HELP " << statesbase << "weight "                          << "The weight within the order in which this server is picked"                           << "\n";
+  output << "# TYPE " << statesbase << "weight "                          << "gauge"                                                                                << "\n";
+  output << "# HELP " << statesbase << "tcpdiedsendingquery "             << "The number of TCP I/O errors while sending the query"                                 << "\n";
+  output << "# TYPE " << statesbase << "tcpdiedsendingquery "             << "counter"                                                                              << "\n";
+  output << "# HELP " << statesbase << "tcpdiedreadingresponse "          << "The number of TCP I/O errors while reading the response"                              << "\n";
+  output << "# TYPE " << statesbase << "tcpdiedreadingresponse "          << "counter"                                                                              << "\n";
+  output << "# HELP " << statesbase << "tcpgaveup "                       << "The number of TCP connections failing after too many attempts"                        << "\n";
+  output << "# TYPE " << statesbase << "tcpgaveup "                       << "counter"                                                                              << "\n";
+  output << "# HELP " << statesbase << "tcpconnecttimeouts "              << "The number of TCP connect timeouts"                                                   << "\n";
+  output << "# TYPE " << statesbase << "tcpconnecttimeouts "              << "counter"                                                                              << "\n";
+  output << "# HELP " << statesbase << "tcpreadtimeouts "                 << "The number of TCP read timeouts"                                                      << "\n";
+  output << "# TYPE " << statesbase << "tcpreadtimeouts "                 << "counter"                                                                              << "\n";
+  output << "# HELP " << statesbase << "tcpwritetimeouts "                << "The number of TCP write timeouts"                                                     << "\n";
+  output << "# TYPE " << statesbase << "tcpwritetimeouts "                << "counter"                                                                              << "\n";
+  output << "# HELP " << statesbase << "tcpcurrentconnections "           << "The number of current TCP connections"                                                << "\n";
+  output << "# TYPE " << statesbase << "tcpcurrentconnections "           << "gauge"                                                                                << "\n";
+  output << "# HELP " << statesbase << "tcpmaxconcurrentconnections "     << "The maximum number of concurrent TCP connections"                                     << "\n";
+  output << "# TYPE " << statesbase << "tcpmaxconcurrentconnections "     << "counter"                                                                              << "\n";
+  output << "# HELP " << statesbase << "tcptoomanyconcurrentconnections " << "Number of times we had to enforce the maximum number of concurrent TCP connections"   << "\n";
+  output << "# TYPE " << statesbase << "tcptoomanyconcurrentconnections " << "counter"                                                                              << "\n";
+  output << "# HELP " << statesbase << "tcpnewconnections "               << "The number of established TCP connections in total"                                   << "\n";
+  output << "# TYPE " << statesbase << "tcpnewconnections "               << "counter"                                                                              << "\n";
+  output << "# HELP " << statesbase << "tcpreusedconnections "            << "The number of times a TCP connection has been reused"                                 << "\n";
+  output << "# TYPE " << statesbase << "tcpreusedconnections "            << "counter"                                                                              << "\n";
+  output << "# HELP " << statesbase << "tcpavgqueriesperconn "            << "The average number of queries per TCP connection"                                     << "\n";
+  output << "# TYPE " << statesbase << "tcpavgqueriesperconn "            << "gauge"                                                                                << "\n";
+  output << "# HELP " << statesbase << "tcpavgconnduration "              << "The average duration of a TCP connection (ms)"                                        << "\n";
+  output << "# TYPE " << statesbase << "tcpavgconnduration "              << "gauge"                                                                                << "\n";
+  output << "# HELP " << statesbase << "tlsresumptions "                  << "The number of times a TLS session has been resumed"                                   << "\n";
+  output << "# TYPE " << statesbase << "tlsersumptions "                  << "counter"                                                                              << "\n";
+  output << "# HELP " << statesbase << "tcplatency "                      << "Server's latency when answering TCP questions in milliseconds"                        << "\n";
+  output << "# TYPE " << statesbase << "tcplatency "                      << "gauge"                                                                                << "\n";
 
   for (const auto& state : *states) {
     string serverName;
 
-    if (state->getName().empty())
-      serverName = state->remote.toStringWithPort();
-    else
+    if (state->getName().empty()) {
+      serverName = state->d_config.remote.toStringWithPort();
+    }
+    else {
       serverName = state->getName();
+    }
 
     boost::replace_all(serverName, ".", "_");
 
     const std::string label = boost::str(boost::format("{server=\"%1%\",address=\"%2%\"}")
-                                         % serverName % state->remote.toStringWithPort());
+                                         % serverName % state->d_config.remote.toStringWithPort());
 
-    output << statesbase << "status"                       << label << " " << (state->isUp() ? "1" : "0")        << "\n";
-    output << statesbase << "queries"                      << label << " " << state->queries.load()              << "\n";
-    output << statesbase << "responses"                    << label << " " << state->responses.load()            << "\n";
-    output << statesbase << "drops"                        << label << " " << state->reuseds.load()              << "\n";
-    if (state->isUp())
-        output << statesbase << "latency"                  << label << " " << state->latencyUsec/1000.0          << "\n";
-    output << statesbase << "senderrors"                   << label << " " << state->sendErrors.load()           << "\n";
-    output << statesbase << "outstanding"                  << label << " " << state->outstanding.load()          << "\n";
-    output << statesbase << "order"                        << label << " " << state->order                       << "\n";
-    output << statesbase << "weight"                       << label << " " << state->weight                      << "\n";
-    output << statesbase << "tcpdiedsendingquery"          << label << " " << state->tcpDiedSendingQuery         << "\n";
-    output << statesbase << "tcpdiedreadingresponse"       << label << " " << state->tcpDiedReadingResponse      << "\n";
-    output << statesbase << "tcpgaveup"                    << label << " " << state->tcpGaveUp                   << "\n";
-    output << statesbase << "tcpreadtimeouts"              << label << " " << state->tcpReadTimeouts             << "\n";
-    output << statesbase << "tcpwritetimeouts"             << label << " " << state->tcpWriteTimeouts            << "\n";
-    output << statesbase << "tcpconnecttimeouts"           << label << " " << state->tcpConnectTimeouts          << "\n";
-    output << statesbase << "tcpcurrentconnections"        << label << " " << state->tcpCurrentConnections       << "\n";
-    output << statesbase << "tcpmaxconcurrentconnections"  << label << " " << state->tcpMaxConcurrentConnections << "\n";
-    output << statesbase << "tcpnewconnections"            << label << " " << state->tcpNewConnections           << "\n";
-    output << statesbase << "tcpreusedconnections"         << label << " " << state->tcpReusedConnections        << "\n";
-    output << statesbase << "tcpavgqueriesperconn"         << label << " " << state->tcpAvgQueriesPerConnection  << "\n";
-    output << statesbase << "tcpavgconnduration"           << label << " " << state->tcpAvgConnectionDuration    << "\n";
+    output << statesbase << "status"                           << label << " " << (state->isUp() ? "1" : "0")            << "\n";
+    output << statesbase << "queries"                          << label << " " << state->queries.load()                  << "\n";
+    output << statesbase << "responses"                        << label << " " << state->responses.load()                << "\n";
+    output << statesbase << "noncompliantresponses"            << label << " " << state->nonCompliantResponses.load()    << "\n";
+    output << statesbase << "drops"                            << label << " " << state->reuseds.load()                  << "\n";
+    if (state->isUp()) {
+      output << statesbase << "latency"                        << label << " " << state->latencyUsec/1000.0              << "\n";
+      output << statesbase << "tcplatency"                     << label << " " << state->latencyUsecTCP/1000.0           << "\n";
+    }
+    output << statesbase << "senderrors"                       << label << " " << state->sendErrors.load()               << "\n";
+    output << statesbase << "outstanding"                      << label << " " << state->outstanding.load()              << "\n";
+    output << statesbase << "order"                            << label << " " << state->d_config.order                  << "\n";
+    output << statesbase << "weight"                           << label << " " << state->d_config.d_weight               << "\n";
+    output << statesbase << "tcpdiedsendingquery"              << label << " " << state->tcpDiedSendingQuery             << "\n";
+    output << statesbase << "tcpdiedreadingresponse"           << label << " " << state->tcpDiedReadingResponse          << "\n";
+    output << statesbase << "tcpgaveup"                        << label << " " << state->tcpGaveUp                       << "\n";
+    output << statesbase << "tcpreadtimeouts"                  << label << " " << state->tcpReadTimeouts                 << "\n";
+    output << statesbase << "tcpwritetimeouts"                 << label << " " << state->tcpWriteTimeouts                << "\n";
+    output << statesbase << "tcpconnecttimeouts"               << label << " " << state->tcpConnectTimeouts              << "\n";
+    output << statesbase << "tcpcurrentconnections"            << label << " " << state->tcpCurrentConnections           << "\n";
+    output << statesbase << "tcpmaxconcurrentconnections"      << label << " " << state->tcpMaxConcurrentConnections     << "\n";
+    output << statesbase << "tcptoomanyconcurrentconnections"  << label << " " << state->tcpTooManyConcurrentConnections << "\n";
+    output << statesbase << "tcpnewconnections"                << label << " " << state->tcpNewConnections               << "\n";
+    output << statesbase << "tcpreusedconnections"             << label << " " << state->tcpReusedConnections            << "\n";
+    output << statesbase << "tcpavgqueriesperconn"             << label << " " << state->tcpAvgQueriesPerConnection      << "\n";
+    output << statesbase << "tcpavgconnduration"               << label << " " << state->tcpAvgConnectionDuration        << "\n";
+    output << statesbase << "tlsresumptions"                   << label << " " << state->tlsResumptions                  << "\n";
   }
 
   const string frontsbase = "dnsdist_frontend_";
   output << "# HELP " << frontsbase << "queries " << "Amount of queries received by this frontend" << "\n";
   output << "# TYPE " << frontsbase << "queries " << "counter" << "\n";
+  output << "# HELP " << frontsbase << "noncompliantqueries " << "Amount of non-compliant queries received by this frontend" << "\n";
+  output << "# TYPE " << frontsbase << "noncompliantqueries " << "counter" << "\n";
   output << "# HELP " << frontsbase << "responses " << "Amount of responses sent by this frontend" << "\n";
   output << "# TYPE " << frontsbase << "responses " << "counter" << "\n";
   output << "# HELP " << frontsbase << "tcpdiedreadingquery " << "Amount of TCP connections terminated while reading the query from the client" << "\n";
@@ -580,6 +672,7 @@ static void handlePrometheus(const YaHTTP::Request& req, YaHTTP::Response& resp)
                                          % frontName % proto % threadNumber);
 
     output << frontsbase << "queries" << label << front->queries.load() << "\n";
+    output << frontsbase << "noncompliantqueries" << label << front->nonCompliantQueries.load() << "\n";
     output << frontsbase << "responses" << label << front->responses.load() << "\n";
     if (front->isTCP()) {
       output << frontsbase << "tcpdiedreadingquery" << label << front->tcpDiedReadingQuery.load() << "\n";
@@ -733,6 +826,7 @@ static void handlePrometheus(const YaHTTP::Request& req, YaHTTP::Response& resp)
       output << cachebase << "cache_lookup_collisions" <<label << " " << cache->getLookupCollisions() << "\n";
       output << cachebase << "cache_insert_collisions" <<label << " " << cache->getInsertCollisions() << "\n";
       output << cachebase << "cache_ttl_too_shorts"    <<label << " " << cache->getTTLTooShorts()     << "\n";
+      output << cachebase << "cache_cleanup_count"     <<label << " " << cache->getCleanupCount()     << "\n";
     }
   }
 
@@ -768,9 +862,29 @@ static void handlePrometheus(const YaHTTP::Request& req, YaHTTP::Response& resp)
   resp.body = output.str();
   resp.headers["Content-Type"] = "text/plain";
 }
+#endif /* DISABLE_PROMETHEUS */
 
 using namespace json11;
 
+static void addStatsToJSONObject(Json::object& obj)
+{
+  for (const auto& e : g_stats.entries) {
+    if (e.first == "special-memory-usage") {
+      continue; // Too expensive for get-all
+    }
+    if (const auto& val = boost::get<pdns::stat_t*>(&e.second)) {
+      obj.insert({e.first, (double)(*val)->load()});
+    } else if (const auto& adval = boost::get<pdns::stat_t_trait<double>*>(&e.second)) {
+      obj.insert({e.first, (*adval)->load()});
+    } else if (const auto& dval = boost::get<double*>(&e.second)) {
+      obj.insert({e.first, (**dval)});
+    } else if (const auto& func = boost::get<DNSDistStats::statfunction_t>(&e.second)) {
+      obj.insert({e.first, (double)(*func)(e.first)});
+    }
+  }
+}
+
+#ifndef DISABLE_BUILTIN_HTML
 static void handleJSONStats(const YaHTTP::Request& req, YaHTTP::Response& resp)
 {
   handleCORS(req, resp);
@@ -792,16 +906,8 @@ static void handleJSONStats(const YaHTTP::Request& req, YaHTTP::Response& resp)
       { "server-policy", g_policy.getLocal()->getName()}
     };
 
-    for (const auto& e : g_stats.entries) {
-      if (e.first == "special-memory-usage")
-        continue; // Too expensive for get-all
-      if(const auto& val = boost::get<pdns::stat_t*>(&e.second))
-        obj.insert({e.first, (double)(*val)->load()});
-      else if (const auto& dval = boost::get<double*>(&e.second))
-        obj.insert({e.first, (**dval)});
-      else
-        obj.insert({e.first, (double)(*boost::get<DNSDistStats::statfunction_t>(&e.second))(e.first)});
-    }
+    addStatsToJSONObject(obj);
+
     Json my_json = obj;
     resp.body = my_json.dump();
     resp.headers["Content-Type"] = "application/json";
@@ -869,14 +975,15 @@ static void handleJSONStats(const YaHTTP::Request& req, YaHTTP::Response& resp)
     resp.status = 404;
   }
 }
+#endif /* DISABLE_BUILTIN_HTML */
 
 static void addServerToJSON(Json::array& servers, int id, const std::shared_ptr<DownstreamState>& a)
 {
   string status;
-  if (a->availability == DownstreamState::Availability::Up) {
+  if (a->d_config.availability == DownstreamState::Availability::Up) {
     status = "UP";
   }
-  else if (a->availability == DownstreamState::Availability::Down) {
+  else if (a->d_config.availability == DownstreamState::Availability::Down) {
     status = "DOWN";
   }
   else {
@@ -884,25 +991,27 @@ static void addServerToJSON(Json::array& servers, int id, const std::shared_ptr<
   }
 
   Json::array pools;
-  for(const auto& p: a->pools) {
+  for (const auto& p: a->d_config.pools) {
     pools.push_back(p);
   }
 
   Json::object server {
     {"id", id},
     {"name", a->getName()},
-    {"address", a->remote.toStringWithPort()},
+    {"address", a->d_config.remote.toStringWithPort()},
     {"state", status},
+    {"protocol", a->getProtocol().toPrettyString()},
     {"qps", (double)a->queryLoad},
     {"qpsLimit", (double)a->qps.getRate()},
     {"outstanding", (double)a->outstanding},
     {"reuseds", (double)a->reuseds},
-    {"weight", (double)a->weight},
-    {"order", (double)a->order},
+    {"weight", (double)a->d_config.d_weight},
+    {"order", (double)a->d_config.order},
     {"pools", pools},
     {"latency", (double)(a->latencyUsec/1000.0)},
     {"queries", (double)a->queries},
     {"responses", (double)a->responses},
+    {"nonCompliantResponses", (double)a->nonCompliantResponses},
     {"sendErrors", (double)a->sendErrors},
     {"tcpDiedSendingQuery", (double)a->tcpDiedSendingQuery},
     {"tcpDiedReadingResponse", (double)a->tcpDiedReadingResponse},
@@ -912,16 +1021,20 @@ static void addServerToJSON(Json::array& servers, int id, const std::shared_ptr<
     {"tcpWriteTimeouts", (double)a->tcpWriteTimeouts},
     {"tcpCurrentConnections", (double)a->tcpCurrentConnections},
     {"tcpMaxConcurrentConnections", (double)a->tcpMaxConcurrentConnections},
+    {"tcpTooManyConcurrentConnections", (double)a->tcpTooManyConcurrentConnections},
     {"tcpNewConnections", (double)a->tcpNewConnections},
     {"tcpReusedConnections", (double)a->tcpReusedConnections},
     {"tcpAvgQueriesPerConnection", (double)a->tcpAvgQueriesPerConnection},
     {"tcpAvgConnectionDuration", (double)a->tcpAvgConnectionDuration},
+    {"tlsResumptions", (double)a->tlsResumptions},
+    {"tcpLatency", (double)(a->latencyUsecTCP/1000.0)},
     {"dropRate", (double)a->dropRate}
   };
 
   /* sending a latency for a DOWN server doesn't make sense */
-  if (a->availability == DownstreamState::Availability::Down) {
+  if (a->d_config.availability == DownstreamState::Availability::Down) {
     server["latency"] = nullptr;
+    server["tcpLatency"] = nullptr;
   }
 
   servers.push_back(std::move(server));
@@ -951,6 +1064,7 @@ static void handleStats(const YaHTTP::Request& req, YaHTTP::Response& resp)
       { "tcp", front->tcpFD >= 0 },
       { "type", front->getType() },
       { "queries", (double) front->queries.load() },
+      { "nonCompliantQueries", (double) front->nonCompliantQueries.load() },
       { "responses", (double) front->responses.load() },
       { "tcpDiedReadingQuery", (double) front->tcpDiedReadingQuery.load() },
       { "tcpDiedSendingResponse", (double) front->tcpDiedSendingResponse.load() },
@@ -1043,7 +1157,8 @@ static void handleStats(const YaHTTP::Request& req, YaHTTP::Response& resp)
       { "cacheDeferredLookups", (double) (cache ? cache->getDeferredLookups() : 0) },
       { "cacheLookupCollisions", (double) (cache ? cache->getLookupCollisions() : 0) },
       { "cacheInsertCollisions", (double) (cache ? cache->getInsertCollisions() : 0) },
-      { "cacheTTLTooShorts", (double) (cache ? cache->getTTLTooShorts() : 0) }
+      { "cacheTTLTooShorts", (double) (cache ? cache->getTTLTooShorts() : 0) },
+      { "cacheCleanupCount", (double) (cache ? cache->getCleanupCount() : 0) }
     };
     pools.push_back(entry);
   }
@@ -1091,6 +1206,9 @@ static void handleStats(const YaHTTP::Request& req, YaHTTP::Response& resp)
     localaddressesStr += addr;
   }
 
+  Json::object stats;
+  addStatsToJSONObject(stats);
+
   Json my_json = Json::object {
     { "daemon_type", "dnsdist" },
     { "version", VERSION},
@@ -1103,7 +1221,8 @@ static void handleStats(const YaHTTP::Request& req, YaHTTP::Response& resp)
     { "self-answered-response-rules", selfAnsweredResponseRules},
     { "acl", acl},
     { "local", localaddressesStr},
-    { "dohFrontends", dohs }
+    { "dohFrontends", dohs },
+    { "statistics", stats }
   };
   resp.headers["Content-Type"] = "application/json";
   resp.body = my_json.dump();
@@ -1141,7 +1260,8 @@ static void handlePoolStats(const YaHTTP::Request& req, YaHTTP::Response& resp)
     { "cacheDeferredLookups", (double) (cache ? cache->getDeferredLookups() : 0) },
     { "cacheLookupCollisions", (double) (cache ? cache->getLookupCollisions() : 0) },
     { "cacheInsertCollisions", (double) (cache ? cache->getInsertCollisions() : 0) },
-    { "cacheTTLTooShorts", (double) (cache ? cache->getTTLTooShorts() : 0) }
+    { "cacheTTLTooShorts", (double) (cache ? cache->getTTLTooShorts() : 0) },
+    { "cacheCleanupCount", (double) (cache ? cache->getCleanupCount() : 0) }
   };
 
   Json::array servers;
@@ -1170,11 +1290,18 @@ static void handleStatsOnly(const YaHTTP::Request& req, YaHTTP::Response& resp)
     if (item.first == "special-memory-usage")
       continue; // Too expensive for get-all
 
-    if(const auto& val = boost::get<pdns::stat_t*>(&item.second)) {
+    if (const auto& val = boost::get<pdns::stat_t*>(&item.second)) {
       doc.push_back(Json::object {
           { "type", "StatisticItem" },
           { "name", item.first },
           { "value", (double)(*val)->load() }
+        });
+    }
+    else if (const auto& adval = boost::get<pdns::stat_t_trait<double>*>(&item.second)) {
+      doc.push_back(Json::object {
+          { "type", "StatisticItem" },
+          { "name", item.first },
+          { "value", (*adval)->load() }
         });
     }
     else if (const auto& dval = boost::get<double*>(&item.second)) {
@@ -1184,11 +1311,11 @@ static void handleStatsOnly(const YaHTTP::Request& req, YaHTTP::Response& resp)
           { "value", (**dval) }
         });
     }
-    else {
+    else if (const auto& func = boost::get<DNSDistStats::statfunction_t>(&item.second)) {
       doc.push_back(Json::object {
           { "type", "StatisticItem" },
           { "name", item.first },
-          { "value", (double)(*boost::get<DNSDistStats::statfunction_t>(&item.second))(item.first) }
+          { "value", (double)(*func)(item.first) }
         });
     }
   }
@@ -1197,6 +1324,7 @@ static void handleStatsOnly(const YaHTTP::Request& req, YaHTTP::Response& resp)
   resp.headers["Content-Type"] = "application/json";
 }
 
+#ifndef DISABLE_WEB_CONFIG
 static void handleConfigDump(const YaHTTP::Request& req, YaHTTP::Response& resp)
 {
   handleCORS(req, resp);
@@ -1306,6 +1434,7 @@ static void handleAllowFrom(const YaHTTP::Request& req, YaHTTP::Response& resp)
     resp.body = my_json.dump();
   }
 }
+#endif /* DISABLE_WEB_CONFIG */
 
 static std::unordered_map<std::string, std::function<void(const YaHTTP::Request&, YaHTTP::Response&)>> s_webHandlers;
 
@@ -1315,6 +1444,14 @@ void registerWebHandler(const std::string& endpoint, std::function<void(const Ya
 {
   s_webHandlers[endpoint] = handler;
 }
+
+void clearWebHandlers()
+{
+  s_webHandlers.clear();
+}
+
+#ifndef DISABLE_BUILTIN_HTML
+#include "htmlfiles.h"
 
 static void redirectToIndex(const YaHTTP::Request& req, YaHTTP::Response& resp)
 {
@@ -1350,21 +1487,30 @@ static void handleBuiltInFiles(const YaHTTP::Request& req, YaHTTP::Response& res
 
   resp.status = 200;
 }
+#endif /* DISABLE_BUILTIN_HTML */
 
 void registerBuiltInWebHandlers()
 {
+#ifndef DISABLE_BUILTIN_HTML
   registerWebHandler("/jsonstat", handleJSONStats);
+#endif /* DISABLE_BUILTIN_HTML */
+#ifndef DISABLE_PROMETHEUS
   registerWebHandler("/metrics", handlePrometheus);
+#endif /* DISABLE_PROMETHEUS */
   registerWebHandler("/api/v1/servers/localhost", handleStats);
   registerWebHandler("/api/v1/servers/localhost/pool", handlePoolStats);
   registerWebHandler("/api/v1/servers/localhost/statistics", handleStatsOnly);
+#ifndef DISABLE_WEB_CONFIG
   registerWebHandler("/api/v1/servers/localhost/config", handleConfigDump);
   registerWebHandler("/api/v1/servers/localhost/config/allow-from", handleAllowFrom);
+#endif /* DISABLE_WEB_CONFIG */
+#ifndef DISABLE_BUILTIN_HTML
   registerWebHandler("/", redirectToIndex);
 
   for (const auto& path : s_urlmap) {
     registerWebHandler("/" + path.first, handleBuiltInFiles);
   }
+#endif /* DISABLE_BUILTIN_HTML */
 }
 
 static void connectionThread(WebClientConnection&& conn)
@@ -1453,20 +1599,20 @@ static void connectionThread(WebClientConnection&& conn)
   }
 }
 
-void setWebserverAPIKey(const boost::optional<std::string> apiKey)
+void setWebserverAPIKey(std::unique_ptr<CredentialsHolder>&& apiKey)
 {
   auto config = g_webserverConfig.lock();
 
   if (apiKey) {
-    config->apiKey = *apiKey;
+    config->apiKey = std::move(apiKey);
   } else {
-    config->apiKey.clear();
+    config->apiKey.reset();
   }
 }
 
-void setWebserverPassword(const std::string& password)
+void setWebserverPassword(std::unique_ptr<CredentialsHolder>&& password)
 {
-  g_webserverConfig.lock()->password = password;
+  g_webserverConfig.lock()->password = std::move(password);
 }
 
 void setWebserverACL(const std::string& acl)
@@ -1477,7 +1623,7 @@ void setWebserverACL(const std::string& acl)
   g_webserverConfig.lock()->acl = std::move(newACL);
 }
 
-void setWebserverCustomHeaders(const boost::optional<std::map<std::string, std::string> > customHeaders)
+void setWebserverCustomHeaders(const boost::optional<std::unordered_map<std::string, std::string> > customHeaders)
 {
   g_webserverConfig.lock()->customHeaders = customHeaders;
 }
@@ -1485,6 +1631,11 @@ void setWebserverCustomHeaders(const boost::optional<std::map<std::string, std::
 void setWebserverStatsRequireAuthentication(bool require)
 {
   g_webserverConfig.lock()->statsRequireAuthentication = require;
+}
+
+void setWebserverAPIRequiresAuthentication(bool require)
+{
+  g_webserverConfig.lock()->apiRequiresAuthentication = require;
 }
 
 void setWebserverMaxConcurrentConnections(size_t max)
@@ -1497,7 +1648,7 @@ void dnsdistWebserverThread(int sock, const ComboAddress& local)
   setThreadName("dnsdist/webserv");
   warnlog("Webserver launched on %s", local.toStringWithPort());
 
-  if (g_webserverConfig.lock()->password.empty()) {
+  if (!g_webserverConfig.lock()->password) {
     warnlog("Webserver launched on %s without a password set!", local.toStringWithPort());
   }
 

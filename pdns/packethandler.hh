@@ -97,7 +97,7 @@ private:
   void makeNXDomain(DNSPacket& p, std::unique_ptr<DNSPacket>& r, const DNSName& target, const DNSName& wildcard);
   void makeNOError(DNSPacket& p, std::unique_ptr<DNSPacket>& r, const DNSName& target, const DNSName& wildcard, int mode);
   vector<DNSZoneRecord> getBestReferralNS(DNSPacket& p, const DNSName &target);
-  vector<DNSZoneRecord> getBestDNAMESynth(DNSPacket& p, DNSName &target);
+  void getBestDNAMESynth(DNSPacket& p, DNSName &target, vector<DNSZoneRecord> &ret);
   bool tryDNAME(DNSPacket& p, std::unique_ptr<DNSPacket>& r, DNSName &target);
   bool tryReferral(DNSPacket& p, std::unique_ptr<DNSPacket>& r, const DNSName &target, bool retargeted);
 
@@ -117,7 +117,7 @@ private:
   SOAData d_sd;
   std::unique_ptr<AuthLua4> d_pdl;
   std::unique_ptr<AuthLua4> d_update_policy_lua;
-
+  std::unique_ptr<AuthLua4> s_LUA;
   UeberBackend B; // every thread an own instance
   DNSSECKeeper d_dk; // B is shared with DNSSECKeeper
 };

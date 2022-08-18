@@ -18,9 +18,14 @@ BuildRequires: systemd
 BuildRequires: systemd-units
 BuildRequires: systemd-devel
 
+BuildRequires: krb5-devel
 BuildRequires: p11-kit-devel
 BuildRequires: libcurl-devel
+%if 0%{?rhel} < 8
+BuildRequires: boost169-devel
+%else
 BuildRequires: boost-devel
+%endif
 BuildRequires: libsodium-devel
 BuildRequires: bison
 BuildRequires: openssl-devel
@@ -137,7 +142,9 @@ Summary: Geo backend for %{name}
 Group: System Environment/Daemons
 Requires: %{name}%{?_isa} = %{version}-%{release}
 BuildRequires: yaml-cpp-devel
+%if 0%{?rhel} < 9
 BuildRequires: geoip-devel
+%endif
 BuildRequires: libmaxminddb-devel
 %global backends %{backends} geoip
 
@@ -182,6 +189,11 @@ This package contains the ixfrdist program.
 %build
 export CPPFLAGS="-DLDAP_DEPRECATED"
 
+%if 0%{?rhel} < 8
+export CPPFLAGS=-I/usr/include/boost169
+export LDFLAGS=-L/usr/lib64/boost169
+%endif
+
 %configure \
   --enable-option-checking=fatal \
   --sysconfdir=%{_sysconfdir}/%{name} \
@@ -190,7 +202,7 @@ export CPPFLAGS="-DLDAP_DEPRECATED"
   --disable-silent-rules \
   --with-modules='' \
   --with-lua=%{lua_implementation} \
-  --with-dynmodules='%{backends} random' \
+  --with-dynmodules='%{backends}' \
   --enable-tools \
   --with-libsodium \
 %if 0%{?amzn} != 2
@@ -199,6 +211,7 @@ export CPPFLAGS="-DLDAP_DEPRECATED"
   --enable-unit-tests \
   --enable-lua-records \
   --enable-experimental-pkcs11 \
+  --enable-dns-over-tls \
   --enable-systemd
 
 make %{?_smp_mflags}
@@ -224,6 +237,14 @@ chmod 600 %{buildroot}%{_sysconfdir}/%{name}/pdns.conf
 # rename zone2ldap to pdns-zone2ldap (#1193116)
 %{__mv} %{buildroot}/%{_bindir}/zone2ldap %{buildroot}/%{_bindir}/pdns-zone2ldap
 %{__mv} %{buildroot}/%{_mandir}/man1/zone2ldap.1 %{buildroot}/%{_mandir}/man1/pdns-zone2ldap.1
+
+# The EL7 and 8 systemd actually supports %t, but its version number is older than that, so we do use seperate runtime dirs, but don't rely on RUNTIME_DIRECTORY
+%if 0%{?rhel} < 9
+sed -e 's!/pdns_server!& --socket-dir=%t/pdns!' -i %{buildroot}/%{_unitdir}/pdns.service
+%if 0%{?rhel} < 8
+sed -e 's!/pdns_server!& --socket-dir=%t/pdns-%i!' -e 's!RuntimeDirectory=pdns!&-%i!' -i %{buildroot}/%{_unitdir}/pdns@.service
+%endif
+%endif
 
 %check
 PDNS_TEST_NO_IPV6=1 make %{?_smp_mflags} -C pdns check || (cat pdns/test-suite.log && false)
@@ -265,7 +286,6 @@ systemctl daemon-reload ||:
 %{_bindir}/zone2json
 %{_bindir}/zone2sql
 %{_libdir}/%{name}/libbindbackend.so
-%{_libdir}/%{name}/librandombackend.so
 %{_mandir}/man1/pdns-zone2ldap.1.gz
 %{_mandir}/man1/pdns_control.1.gz
 %{_mandir}/man1/pdns_server.1.gz

@@ -38,7 +38,7 @@
 class KqueueFDMultiplexer : public FDMultiplexer
 {
 public:
-  KqueueFDMultiplexer();
+  KqueueFDMultiplexer(unsigned int maxEventsHint);
   ~KqueueFDMultiplexer()
   {
     if (d_kqueuefd >= 0) {
@@ -59,15 +59,12 @@ public:
 
 private:
   int d_kqueuefd;
-  boost::shared_array<struct kevent> d_kevents;
-  static unsigned int s_maxevents; // not a hard maximum
+  std::vector<struct kevent> d_kevents;
 };
 
-unsigned int KqueueFDMultiplexer::s_maxevents = 1024;
-
-static FDMultiplexer* make()
+static FDMultiplexer* make(unsigned int maxEventsHint)
 {
-  return new KqueueFDMultiplexer();
+  return new KqueueFDMultiplexer(maxEventsHint);
 }
 
 static struct KqueueRegisterOurselves
@@ -78,8 +75,8 @@ static struct KqueueRegisterOurselves
   }
 } kQueueDoIt;
 
-KqueueFDMultiplexer::KqueueFDMultiplexer() :
-  d_kevents(new struct kevent[s_maxevents])
+KqueueFDMultiplexer::KqueueFDMultiplexer(unsigned int maxEventsHint) :
+  d_kevents(maxEventsHint)
 {
   d_kqueuefd = kqueue();
   if (d_kqueuefd < 0) {
@@ -148,7 +145,7 @@ void KqueueFDMultiplexer::getAvailableFDs(std::vector<int>& fds, int timeout)
   ts.tv_sec = timeout / 1000;
   ts.tv_nsec = (timeout % 1000) * 1000000;
 
-  int ret = kevent(d_kqueuefd, 0, 0, d_kevents.get(), s_maxevents, &ts);
+  int ret = kevent(d_kqueuefd, 0, 0, d_kevents.data(), d_kevents.size(), &ts);
 
   if (ret < 0 && errno != EINTR) {
     throw FDMultiplexerException("kqueue returned error: " + stringerror());
@@ -177,7 +174,7 @@ int KqueueFDMultiplexer::run(struct timeval* now, int timeout)
   ts.tv_sec = timeout / 1000;
   ts.tv_nsec = (timeout % 1000) * 1000000;
 
-  int ret = kevent(d_kqueuefd, 0, 0, d_kevents.get(), s_maxevents, &ts);
+  int ret = kevent(d_kqueuefd, 0, 0, d_kevents.data(), d_kevents.size(), &ts);
   gettimeofday(now, nullptr); // MANDATORY!
 
   if (ret < 0 && errno != EINTR) {

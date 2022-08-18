@@ -29,8 +29,6 @@
 #include <mutex>
 #include <boost/utility.hpp>
 
-#include <boost/tuple/tuple.hpp>
-#include <boost/tuple/tuple_comparison.hpp>
 #include <boost/multi_index_container.hpp>
 #include <boost/multi_index/hashed_index.hpp>
 #include <boost/multi_index/ordered_index.hpp>
@@ -69,7 +67,7 @@ struct Bind2DNSRecord
       return false;
     if (qtype == QType::SOA && rhs.qtype != QType::SOA)
       return true;
-    return tie(qtype, content, ttl) < tie(rhs.qtype, rhs.content, rhs.ttl);
+    return std::tie(qtype, content, ttl) < std::tie(rhs.qtype, rhs.content, rhs.ttl);
   }
 };
 
@@ -107,36 +105,34 @@ typedef multi_index_container<
   recordstorage_t;
 
 template <typename T>
-class LookButDontTouch //  : public boost::noncopyable
+class LookButDontTouch
 {
 public:
   LookButDontTouch()
   {
   }
-  LookButDontTouch(shared_ptr<T> records) :
-    d_records(records)
+  LookButDontTouch(shared_ptr<T>&& records) :
+    d_records(std::move(records))
   {
   }
 
   shared_ptr<const T> get()
   {
-    shared_ptr<const T> ret;
-    {
-      std::lock_guard<std::mutex> lock(s_lock);
-      ret = d_records;
-    }
-    return ret;
+    return d_records;
   }
 
   size_t getEntriesCount() const
   {
-    std::lock_guard<std::mutex> lock(s_lock);
+    if (!d_records) {
+      return 0;
+    }
     return d_records->size();
   }
 
 private:
-  static std::mutex s_lock;
-  shared_ptr<T> d_records;
+  /* we can increase the number of references to that object,
+     but never update the object itself */
+  shared_ptr<const T> d_records;
 };
 
 /** Class which describes all metadata of a domain for storage by the Bind2Backend, and also contains a pointer to a vector of Bind2DNSRecord's */
@@ -188,7 +184,7 @@ public:
   Bind2Backend(const string& suffix = "", bool loadZones = true);
   ~Bind2Backend();
   void getUnfreshSlaveInfos(vector<DomainInfo>* unfreshDomains) override;
-  void getUpdatedMasters(vector<DomainInfo>* changedDomains) override;
+  void getUpdatedMasters(vector<DomainInfo>& changedDomains, std::unordered_set<DNSName>& catalogs, CatalogHashMap& catalogHashes) override;
   bool getDomainInfo(const DNSName& domain, DomainInfo& di, bool getSerial = true) override;
   time_t getCtime(const string& fname);
   // DNSSEC
@@ -196,7 +192,7 @@ public:
   void lookup(const QType&, const DNSName& qdomain, int zoneId, DNSPacket* p = nullptr) override;
   bool list(const DNSName& target, int id, bool include_disabled = false) override;
   bool get(DNSResourceRecord&) override;
-  void getAllDomains(vector<DomainInfo>* domains, bool include_disabled = false) override;
+  void getAllDomains(vector<DomainInfo>* domains, bool getSerial, bool include_disabled = false) override;
 
   static DNSBackend* maker();
   static std::mutex s_startup_lock;
@@ -222,7 +218,7 @@ public:
   bool deactivateDomainKey(const DNSName& name, unsigned int id) override;
   bool publishDomainKey(const DNSName& name, unsigned int id) override;
   bool unpublishDomainKey(const DNSName& name, unsigned int id) override;
-  bool getTSIGKey(const DNSName& name, DNSName* algorithm, string* content) override;
+  bool getTSIGKey(const DNSName& name, DNSName& algorithm, string& content) override;
   bool setTSIGKey(const DNSName& name, const DNSName& algorithm, const string& content) override;
   bool deleteTSIGKey(const DNSName& name) override;
   bool getTSIGKeys(std::vector<struct TSIGKey>& keys) override;
@@ -233,13 +229,13 @@ public:
                                 indexed_by<ordered_unique<member<BB2DomainInfo, unsigned int, &BB2DomainInfo::d_id>>,
                                            ordered_unique<tag<NameTag>, member<BB2DomainInfo, DNSName, &BB2DomainInfo::d_name>>>>
     state_t;
-  static state_t s_state;
-  static ReadWriteLock s_state_lock;
+  static SharedLockGuarded<state_t> s_state;
 
   void parseZoneFile(BB2DomainInfo* bbd);
   void rediscover(string* status = nullptr) override;
 
-  // for supermaster support
+  // for autoprimary support
+  bool autoPrimariesList(std::vector<AutoPrimary>& primaries) override;
   bool superMasterBackend(const string& ip, const DNSName& domain, const vector<DNSResourceRecord>& nsset, string* nameserver, string* account, DNSBackend** db) override;
   static std::mutex s_supermaster_config_lock;
   bool createSlaveDomain(const string& ip, const DNSName& domain, const string& nameserver, const string& account) override;

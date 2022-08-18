@@ -22,7 +22,6 @@
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
-#include "ascii.hh"
 #include "dnsparser.hh"
 #include "sstuff.hh"
 #include "misc.hh"
@@ -36,11 +35,12 @@
 #include <boost/algorithm/string.hpp>
 #include <system_error>
 #include <cinttypes>
+#include <sys/stat.h>
 
-static string g_INstr("IN");
+const static string g_INstr("IN");
 
 ZoneParserTNG::ZoneParserTNG(const string& fname, DNSName  zname, string  reldir, bool upgradeContent):
-  d_reldir(std::move(reldir)), d_zonename(std::move(zname)), d_defaultttl(3600), 
+  d_reldir(std::move(reldir)), d_zonename(std::move(zname)), d_defaultttl(3600),
   d_templatecounter(0), d_templatestop(0), d_templatestep(0),
   d_havedollarttl(false), d_fromfile(true), d_upgradeContent(upgradeContent)
 {
@@ -57,10 +57,34 @@ ZoneParserTNG::ZoneParserTNG(const vector<string>& zonedata, DNSName  zname, boo
 
 void ZoneParserTNG::stackFile(const std::string& fname)
 {
-  FILE *fp=fopen(fname.c_str(), "r");
-  if(!fp) {
-    std::error_code ec (errno,std::generic_category());
-    throw std::system_error(ec, "Unable to open file '"+fname+"': "+stringerror());
+  if (d_filestates.size() >= d_maxIncludes) {
+    std::error_code ec (0, std::generic_category());
+    throw std::system_error(ec, "Include limit reached");
+  }
+  int fd = open(fname.c_str(), O_RDONLY, 0);
+  if (fd == -1) {
+    int err = errno;
+    std::error_code ec (err, std::generic_category());
+    throw std::system_error(ec, "Unable to open file '" + fname + "': " + stringerror(err));
+  }
+  struct stat st;
+  if (fstat(fd, &st) == -1) {
+    int err = errno;
+    close(fd);
+    std::error_code ec (err, std::generic_category());
+    throw std::system_error(ec, "Unable to stat file '" + fname + "': " + stringerror(err));
+  }
+  if (!S_ISREG(st.st_mode)) {
+    close(fd);
+    std::error_code ec (0, std::generic_category());
+    throw std::system_error(ec, "File '" + fname + "': not a regular file");
+  }
+  FILE *fp = fdopen(fd, "r");
+  if (!fp) {
+    int err = errno;
+    close(fd);
+    std::error_code ec (err, std::generic_category());
+    throw std::system_error(ec, "Unable to open file '" + fname + "': " + stringerror(err));
   }
 
   filestate fs(fp, fname);
@@ -104,7 +128,7 @@ unsigned int ZoneParserTNG::makeTTLFromZone(const string& str)
 
   unsigned int val;
   try {
-    val=pdns_stou(str);
+    pdns::checked_stoi_into(val, str);
   }
   catch (const std::out_of_range& oor) {
     throw PDNSException("Unable to parse time specification '"+str+"' "+getLineOfFile());
@@ -139,8 +163,10 @@ unsigned int ZoneParserTNG::makeTTLFromZone(const string& str)
 
 bool ZoneParserTNG::getTemplateLine()
 {
-  if(d_templateparts.empty() || d_templatecounter > d_templatestop) // no template, or done with
+  if (d_templateparts.empty() || d_templateCounterWrapped || d_templatecounter > d_templatestop) {
+    // no template, or done with
     return false;
+  }
 
   string retline;
   for(parts_t::const_iterator iter = d_templateparts.begin() ; iter != d_templateparts.end(); ++iter) {
@@ -148,8 +174,8 @@ bool ZoneParserTNG::getTemplateLine()
       retline+=" ";
 
     string part=makeString(d_templateline, *iter);
-    
-    /* a part can contain a 'naked' $, an escaped $ (\$), or ${offset,width,radix}, with width defaulting to 0, 
+
+    /* a part can contain a 'naked' $, an escaped $ (\$), or ${offset,width,radix}, with width defaulting to 0,
        and radix being 'd', 'o', 'x' or 'X', defaulting to 'd' (so ${offset} is valid).
 
        The width is zero-padded, so if the counter is at 1, the offset is 15, width is 3, and the radix is 'x',
@@ -167,7 +193,7 @@ bool ZoneParserTNG::getTemplateLine()
         inescape=false;
         continue;
       }
-        
+
       if(part[pos]=='\\') {
         inescape=true;
         continue;
@@ -177,14 +203,14 @@ bool ZoneParserTNG::getTemplateLine()
           outpart.append(std::to_string(d_templatecounter));
           continue;
         }
-        
-        // need to deal with { case 
-        
+
+        // need to deal with { case
+
         pos+=2;
         string::size_type startPos=pos;
         for(; pos < part.size() && part[pos]!='}' ; ++pos)
           ;
-        
+
         if(pos == part.size()) // partial spec
           break;
 
@@ -198,8 +224,15 @@ bool ZoneParserTNG::getTemplateLine()
         if (extracted < 1) {
           throw PDNSException("Unable to parse offset, width and radix for $GENERATE's lhs from '"+spec+"' "+getLineOfFile());
         }
+        if (width < 0) {
+          throw PDNSException("Invalid width ("+std::to_string(width)+") for $GENERATE's lhs from '"+spec+"' "+getLineOfFile());
+        }
 
         char tmp[80];
+
+        /* a width larger than the output buffer does not make any sense */
+        width = std::min(width, static_cast<int>(sizeof(tmp)));
+
         switch (radix) {
         case 'o':
           snprintf(tmp, sizeof(tmp), "%0*o", width, d_templatecounter + offset);
@@ -222,7 +255,13 @@ bool ZoneParserTNG::getTemplateLine()
     }
     retline+=outpart;
   }
-  d_templatecounter+=d_templatestep;
+
+  if ((d_templatestop - d_templatecounter) < d_templatestep) {
+    d_templateCounterWrapped = true;
+  }
+  else {
+    d_templatecounter += d_templatestep;
+  }
 
   d_line = retline;
   return true;
@@ -235,9 +274,9 @@ static void chopComment(string& line)
   string::size_type pos, len = line.length();
   bool inQuote=false;
   for(pos = 0 ; pos < len; ++pos) {
-    if(line[pos]=='\\') 
+    if(line[pos]=='\\')
       pos++;
-    else if(line[pos]=='"') 
+    else if(line[pos]=='"')
       inQuote=!inQuote;
     else if(line[pos]==';' && !inQuote)
       break;
@@ -251,9 +290,9 @@ static bool findAndElide(string& line, char c)
   string::size_type pos, len = line.length();
   bool inQuote=false;
   for(pos = 0 ; pos < len; ++pos) {
-    if(line[pos]=='\\') 
+    if(line[pos]=='\\')
       pos++;
-    else if(line[pos]=='"') 
+    else if(line[pos]=='"')
       inQuote=!inQuote;
     else if(line[pos]==c && !inQuote)
       break;
@@ -310,7 +349,7 @@ bool ZoneParserTNG::get(DNSResourceRecord& rr, std::string* comment)
   if(d_parts[0].first != d_parts[0].second && d_line[d_parts[0].first]==';') // line consisting of nothing but comments
     goto retry;
 
-  if(d_line[0]=='$') { 
+  if(d_line[0]=='$') {
     string command=makeString(d_line, d_parts[0]);
     if(pdns_iequals(command,"$TTL") && d_parts.size() > 1) {
       d_defaultttl=makeTTLFromZone(trim_right_copy_if(makeString(d_line, d_parts[1]), boost::is_any_of(";")));
@@ -333,31 +372,86 @@ bool ZoneParserTNG::get(DNSResourceRecord& rr, std::string* comment)
       // The range part can be one of two forms: start-stop or start-stop/step. If the first
       // form is used, then step is set to 1. start, stop and step must be positive
       // integers between 0 and (2^31)-1. start must not be larger than stop.
-      string range=makeString(d_line, d_parts[1]);
-      d_templatestep=1;
-      d_templatestop=0;
-      int extracted = sscanf(range.c_str(),"%" SCNu32 "-%" SCNu32 "/%" SCNu32, &d_templatecounter, &d_templatestop, &d_templatestep);
-      if (extracted == 2) {
-        d_templatestep=1;
+      // http://www.zytrax.com/books/dns/ch8/generate.html
+      string range = makeString(d_line, d_parts.at(1));
+
+      auto splitOnOnlyOneSeparator = [range](const std::string& input, std::vector<std::string>& output, char separator) {
+        output.clear();
+
+        auto pos = input.find(separator);
+        if (pos == string::npos) {
+          output.emplace_back(input);
+          return;
+        }
+        if (pos == (input.size()-1)) {
+          /* ends on a separator!? */
+          throw std::runtime_error("Invalid range from $GENERATE parameters '" + range + "'");
+        }
+        auto next = input.find(separator, pos + 1);
+        if (next != string::npos) {
+          /* more than one separator */
+          throw std::runtime_error("Invalid range from $GENERATE parameters '" + range + "'");
+        }
+        output.emplace_back(input.substr(0, pos));
+        output.emplace_back(input.substr(pos + 1));
+      };
+
+      std::vector<std::string> fields;
+      splitOnOnlyOneSeparator(range, fields, '-');
+      if (fields.size() != 2) {
+        throw std::runtime_error("Invalid range from $GENERATE parameters '" + range + "'");
       }
-      else if (extracted != 3) {
-        throw exception("Invalid range from $GENERATE parameters '" + range + "'");
+
+      auto parseValue = [](const std::string& parameters, const std::string& name, const std::string& str, uint32_t& value) {
+        try {
+          auto got = std::stoul(str);
+          if (got > std::numeric_limits<uint32_t>::max()) {
+            throw std::runtime_error("Invalid " + name + " value in $GENERATE parameters '" + parameters + "'");
+          }
+          value = static_cast<uint32_t>(got);
+        }
+        catch (const std::exception& e) {
+          throw std::runtime_error("Invalid " + name + " value in $GENERATE parameters '" + parameters + "': " + e.what());
+        }
+      };
+
+      parseValue(range, "start", fields.at(0), d_templatecounter);
+
+      /* now the remaining part(s) */
+      range = std::move(fields.at(1));
+      splitOnOnlyOneSeparator(range, fields, '/');
+
+      if (fields.size() > 2) {
+        throw std::runtime_error("Invalid range from $GENERATE parameters '" + range + "'");
       }
+
+      parseValue(range, "stop", fields.at(0), d_templatestop);
+
+      if (fields.size() == 2) {
+        parseValue(range, "step", fields.at(1), d_templatestep);
+      }
+      else {
+        d_templatestep = 1;
+      }
+
       if (d_templatestep < 1 ||
           d_templatestop < d_templatecounter) {
-        throw exception("Invalid $GENERATE parameters");
+        throw std::runtime_error("Invalid $GENERATE parameters");
       }
       if (d_maxGenerateSteps != 0) {
         size_t numberOfSteps = (d_templatestop - d_templatecounter) / d_templatestep;
         if (numberOfSteps > d_maxGenerateSteps) {
-          throw exception("The number of $GENERATE steps (" + std::to_string(numberOfSteps) + ") is too high, the maximum is set to " + std::to_string(d_maxGenerateSteps));
+          throw std::runtime_error("The number of $GENERATE steps (" + std::to_string(numberOfSteps) + ") is too high, the maximum is set to " + std::to_string(d_maxGenerateSteps));
         }
       }
-      d_templateline=d_line;
+
+      d_templateline = d_line;
       d_parts.pop_front();
       d_parts.pop_front();
 
-      d_templateparts=d_parts;
+      d_templateparts = d_parts;
+      d_templateCounterWrapped = false;
+
       goto retry;
     }
     else
@@ -371,7 +465,7 @@ bool ZoneParserTNG::get(DNSResourceRecord& rr, std::string* comment)
     rr.qname=d_prevqname;
     prevqname=true;
   }else {
-    rr.qname=DNSName(qname); 
+    rr.qname=DNSName(qname);
     d_parts.pop_front();
     if(qname.empty() || qname[0]==';')
       goto retry;
@@ -386,7 +480,7 @@ bool ZoneParserTNG::get(DNSResourceRecord& rr, std::string* comment)
     throw exception("Line with too little parts "+getLineOfFile());
 
   string nextpart;
-  
+
   rr.ttl=d_defaultttl;
   bool haveTTL{false}, haveQTYPE{false};
   string qtypeString;
@@ -417,7 +511,7 @@ bool ZoneParserTNG::get(DNSResourceRecord& rr, std::string* comment)
       // cout<<"ttl is probably: "<<rr.ttl<<endl;
       continue;
     }
-    if(haveQTYPE) 
+    if(haveQTYPE)
       break;
 
     try {
@@ -433,7 +527,7 @@ bool ZoneParserTNG::get(DNSResourceRecord& rr, std::string* comment)
                           "' doesn't look like a qtype, stopping loop");
     }
   }
-  if(!haveQTYPE) 
+  if(!haveQTYPE)
     throw exception("Malformed line "+getLineOfFile()+": '"+d_line+"'");
 
   //  rr.content=d_line.substr(range.first);
@@ -450,7 +544,7 @@ bool ZoneParserTNG::get(DNSResourceRecord& rr, std::string* comment)
         boost::trim_right(d_line);
         chopComment(d_line);
         boost::trim(d_line);
-        
+
         bool ended = findAndElide(d_line, ')');
         rr.content+=" "+d_line;
         if(ended)
@@ -479,7 +573,7 @@ bool ZoneParserTNG::get(DNSResourceRecord& rr, std::string* comment)
       rr.content=recparts[0]+" "+recparts[1];
     }
     break;
-  
+
   case QType::RP:
     stringtok(recparts, rr.content);
     if(recparts.size()==2) {
@@ -502,8 +596,8 @@ bool ZoneParserTNG::get(DNSResourceRecord& rr, std::string* comment)
       rr.content=recparts[0]+" "+recparts[1]+" "+recparts[2]+" "+recparts[3];
     }
     break;
-  
-    
+
+
   case QType::NS:
   case QType::CNAME:
   case QType::DNAME:

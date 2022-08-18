@@ -47,7 +47,7 @@ This state can be modified from the various hooks.
   .. attribute:: DNSQuestion.qtype
 
     QType (as an unsigned integer) of this question.
-    Can be compared against the pre-defined :ref:`constants <DNSQType>` like ``DNSQType.A``, DNSQType.AAAA``.
+    Can be compared against the pre-defined :ref:`constants <DNSQType>` like ``DNSQType.A``, ``DNSQType.AAAA``.
 
   .. attribute:: DNSQuestion.remoteaddr
 
@@ -65,6 +65,10 @@ This state can be modified from the various hooks.
   .. attribute:: DNSQuestion.skipCache
 
     Whether to skip cache lookup / storing the answer for this question, settable.
+
+  .. attribute:: DNSQuestion.tempFailureTTL
+  
+    On a SERVFAIL or REFUSED from the backend, cache for this amount of seconds, settable.
 
   .. attribute:: DNSQuestion.tcp
 
@@ -84,6 +88,12 @@ This state can be modified from the various hooks.
 
     :param int type: The type of the new value, ranging from 0 to 255 (both included)
     :param str value: The binary-safe value
+
+  .. method:: DNSQuestion:getContent() -> str
+
+    .. versionadded:: 1.8.0
+
+    Get the content of the DNS packet as a string
 
   .. method:: DNSQuestion:getDO() -> bool
 
@@ -136,6 +146,21 @@ This state can be modified from the various hooks.
     Return the HTTP scheme for a DoH query.
 
     :returns: The scheme of the DoH query, for example ``http`` or ``https``
+
+  .. method:: DNSQuestion:getProtocol() -> string
+
+    .. versionadded:: 1.7.0
+
+    Return the transport protocol this query was received over, as a string. The possible values are:
+
+    * "Do53 UDP"
+    * "Do53 TCP"
+    * "DNSCrypt UDP"
+    * "DNSCrypt TCP"
+    * "DNS over TLS"
+    * "DNS over HTTPS"
+
+    :returns: A string
 
   .. method:: DNSQuestion:getProxyProtocolValues() -> table
 
@@ -221,16 +246,20 @@ This state can be modified from the various hooks.
 
   .. method:: DNSQuestion:setTag(key, value)
 
-    Set a tag into the DNSQuestion object.
-    This function will not overwrite an existing tag. If the tag already exists it will keep its original value.
+    .. versionchanged:: 1.7.0
+      Prior to 1.7.0 calling :func:`DNSQuestion:setTag` would not overwrite an existing tag value if already set.
+
+    Set a tag into the DNSQuestion object. Overwrites the value if any already exists.
   
     :param string key: The tag's key
     :param string value: The tag's value
 
   .. method:: DNSQuestion:setTagArray(tags)
 
-    Set an array of tags into the DNSQuestion object.
-    This function will not overwrite an existing tag. If the tag already exists it will keep its original value.
+    .. versionchanged:: 1.7.0
+      Prior to 1.7.0 calling :func:`DNSQuestion:setTagArray` would not overwrite existing tag values if already set.
+
+    Set an array of tags into the DNSQuestion object. Overwrites the values if any already exist.
   
     :param table tags: A table of tags, using strings as keys and values
 

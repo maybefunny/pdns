@@ -28,10 +28,13 @@
 #include <boost/multi_index/key_extractors.hpp>
 #include <boost/multi_index/sequenced_index.hpp>
 
+using namespace ::boost::multi_index;
+
 #include "base32.hh"
 #include "dnsname.hh"
 #include "dnsrecords.hh"
 #include "lock.hh"
+#include "stat_t.hh"
 
 class AggressiveNSECCache
 {
@@ -137,11 +140,11 @@ private:
   void updateEntriesCount(SuffixMatchTree<std::shared_ptr<LockGuarded<ZoneEntry>>>& zones);
 
   SharedLockGuarded<SuffixMatchTree<std::shared_ptr<LockGuarded<ZoneEntry>>>> d_zones;
-  std::atomic<uint64_t> d_nsecHits{0};
-  std::atomic<uint64_t> d_nsec3Hits{0};
-  std::atomic<uint64_t> d_nsecWildcardHits{0};
-  std::atomic<uint64_t> d_nsec3WildcardHits{0};
-  std::atomic<uint64_t> d_entriesCount{0};
+  pdns::stat_t d_nsecHits{0};
+  pdns::stat_t d_nsec3Hits{0};
+  pdns::stat_t d_nsecWildcardHits{0};
+  pdns::stat_t d_nsec3WildcardHits{0};
+  pdns::stat_t d_entriesCount{0};
   uint64_t d_maxEntries{0};
 };
 

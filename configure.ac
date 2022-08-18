@@ -4,7 +4,7 @@ AC_INIT([pdns], m4_esyscmd([builder-support/gen-version]))
 AC_CONFIG_AUX_DIR([build-aux])
 AM_INIT_AUTOMAKE([foreign dist-bzip2 no-dist-gzip tar-ustar -Wno-portability subdir-objects parallel-tests 1.11])
 AM_SILENT_RULES([yes])
-AC_CONFIG_SRCDIR([pdns/receiver.cc])
+AC_CONFIG_SRCDIR([pdns/auth-main.cc])
 AC_CONFIG_MACRO_DIR([m4])
 
 AC_USE_SYSTEM_EXTENSIONS
@@ -39,6 +39,7 @@ LT_INIT([disable-static dlopen])
 
 PDNS_CHECK_OS
 PTHREAD_SET_NAME
+AC_FUNC_STRERROR_R
 
 PDNS_WITH_LUA([mandatory])
 PDNS_CHECK_LUA_HPP
@@ -106,6 +107,8 @@ AS_IF([test "x$enable_dns_over_tls" != "xno"], [
   ])
 ])
 
+PDNS_ENABLE_IPCIPHER
+
 PDNS_CHECK_RAGEL([pdns/dnslabeltext.cc], [www.powerdns.com])
 PDNS_CHECK_CLOCK_GETTIME
 
@@ -169,9 +172,9 @@ AC_ARG_WITH([socketdir],
   [socketdir="$withval"]
 )
 
-modules="bind gmysql random"
+modules="bind gmysql"
 AC_ARG_WITH([modules],
-  [AS_HELP_STRING([--with-modules], [which backends to compile with @<:@default=bind gmysql random@:>@])],
+  [AS_HELP_STRING([--with-modules], [which backends to compile with @<:@default=bind gmysql@:>@])],
   [modules="$withval"]
 )
 
@@ -350,7 +353,6 @@ AC_CONFIG_FILES([
   modules/lmdbbackend/Makefile
   modules/lua2backend/Makefile
   modules/pipebackend/Makefile
-  modules/randombackend/Makefile
   modules/remotebackend/Makefile
   modules/tinydnsbackend/Makefile
 ])

@@ -21,9 +21,11 @@
  */
 #pragma once
 #include <map>
+#include <optional>
 #include "webserver.hh"
 
 void apiDiscovery(HttpRequest* req, HttpResponse* resp);
+void apiDiscoveryV1(HttpRequest* req, HttpResponse* resp);
 void apiServer(HttpRequest* req, HttpResponse* resp);
 void apiServerDetail(HttpRequest* req, HttpResponse* resp);
 void apiServerConfig(HttpRequest* req, HttpResponse* resp);
@@ -38,4 +40,4 @@ DNSName apiNameToDNSName(const string& name);
 
 // To be provided by product code.
 void productServerStatisticsFetch(std::map<string,string>& out);
-boost::optional<uint64_t> productServerStatisticsFetch(const std::string& name);
+std::optional<uint64_t> productServerStatisticsFetch(const std::string& name);

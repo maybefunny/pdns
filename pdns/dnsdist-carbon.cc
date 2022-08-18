@@ -22,21 +22,16 @@
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
-#include "iputils.hh"
+
+#include "dnsdist-carbon.hh"
+#include "dnsdist.hh"
+
+#ifndef DISABLE_CARBON
 #include "dolog.hh"
 #include "sstuff.hh"
-
-#include "namespaces.hh"
-#include "dnsdist.hh"
 #include "threadname.hh"
 
 GlobalStateHolder<vector<CarbonConfig> > g_carbon;
-static time_t s_start = time(nullptr);
-
-uint64_t uptimeOfProcess(const std::string& str)
-{
-  return time(nullptr) - s_start;
-}
 
 void carbonDumpThread()
 {
@@ -78,23 +73,29 @@ void carbonDumpThread()
           time_t now=time(0);
           for(const auto& e : g_stats.entries) {
             str<<namespace_name<<"."<<hostname<<"."<<instance_name<<"."<<e.first<<' ';
-            if(const auto& val = boost::get<pdns::stat_t*>(&e.second))
+            if (const auto& val = boost::get<pdns::stat_t*>(&e.second)) {
               str<<(*val)->load();
-            else if (const auto& dval = boost::get<double*>(&e.second))
+            }
+            else if(const auto& adval = boost::get<pdns::stat_t_trait<double>*>(&e.second)) {
+              str<<(*adval)->load();
+            }
+            else if (const auto& dval = boost::get<double*>(&e.second)) {
               str<<**dval;
-            else
-              str<<(*boost::get<DNSDistStats::statfunction_t>(&e.second))(e.first);
+            }
+            else if (const auto& func = boost::get<DNSDistStats::statfunction_t>(&e.second)) {
+              str<<(*func)(e.first);
+            }
             str<<' '<<now<<"\r\n";
           }
           auto states = g_dstates.getLocal();
           for(const auto& state : *states) {
-            string serverName = state->getName().empty() ? state->remote.toStringWithPort() : state->getName();
+            string serverName = state->getName().empty() ? state->d_config.remote.toStringWithPort() : state->getName();
             boost::replace_all(serverName, ".", "_");
             const string base = namespace_name + "." + hostname + "." + instance_name + ".servers." + serverName + ".";
             str<<base<<"queries" << ' ' << state->queries.load() << " " << now << "\r\n";
             str<<base<<"responses" << ' ' << state->responses.load() << " " << now << "\r\n";
             str<<base<<"drops" << ' ' << state->reuseds.load() << " " << now << "\r\n";
-            str<<base<<"latency" << ' ' << (state->availability != DownstreamState::Availability::Down ? state->latencyUsec/1000.0 : 0) << " " << now << "\r\n";
+            str<<base<<"latency" << ' ' << (state->d_config.availability != DownstreamState::Availability::Down ? state->latencyUsec/1000.0 : 0) << " " << now << "\r\n";
             str<<base<<"senderrors" << ' ' << state->sendErrors.load() << " " << now << "\r\n";
             str<<base<<"outstanding" << ' ' << state->outstanding.load() << " " << now << "\r\n";
             str<<base<<"tcpdiedsendingquery" << ' '<< state->tcpDiedSendingQuery.load() << " " << now << "\r\n";
@@ -107,8 +108,10 @@ void carbonDumpThread()
             str<<base<<"tcpmaxconcurrentconnections" << ' '<< state->tcpMaxConcurrentConnections.load() << " " << now << "\r\n";
             str<<base<<"tcpnewconnections" << ' '<< state->tcpNewConnections.load() << " " << now << "\r\n";
             str<<base<<"tcpreusedconnections" << ' '<< state->tcpReusedConnections.load() << " " << now << "\r\n";
+            str<<base<<"tlsresumptions" << ' '<< state->tlsResumptions.load() << " " << now << "\r\n";
             str<<base<<"tcpavgqueriesperconnection" << ' '<< state->tcpAvgQueriesPerConnection.load() << " " << now << "\r\n";
             str<<base<<"tcpavgconnectionduration" << ' '<< state->tcpAvgConnectionDuration.load() << " " << now << "\r\n";
+            str<<base<<"tcptoomanyconcurrentconnections" << ' '<< state->tcpTooManyConcurrentConnections.load() << " " << now << "\r\n";
           }
 
           std::map<std::string,uint64_t> frontendDuplicates;
@@ -186,6 +189,7 @@ void carbonDumpThread()
               str<<base<<"cache-lookup-collisions" << " " << cache->getLookupCollisions() << " " << now << "\r\n";
               str<<base<<"cache-insert-collisions" << " " << cache->getInsertCollisions() << " " << now << "\r\n";
               str<<base<<"cache-ttl-too-shorts" << " " << cache->getTTLTooShorts() << " " << now << "\r\n";
+              str<<base<<"cache-cleanup-count" << " " << cache->getCleanupCount() << " " << now << "\r\n";
             }
           }
 
@@ -276,4 +280,12 @@ void carbonDumpThread()
   {
     errlog("Carbon thread died");
   }
+}
+#endif /* DISABLE_CARBON */
+
+static time_t s_start = time(nullptr);
+
+uint64_t uptimeOfProcess(const std::string& str)
+{
+  return time(nullptr) - s_start;
 }

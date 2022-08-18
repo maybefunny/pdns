@@ -188,6 +188,14 @@ paths:
           description: '“true” (default) or “false”, whether to include the “rrsets” in the response Zone object.'
           type: boolean
           default: true
+        - name: rrset_name
+          in: query
+          description: Limit output to RRsets for this name.
+          type: string
+        - name: rrset_type
+          in: query
+          description: Limit output to the RRset of this type. Can only be used together with rrset_name.
+          type: string
       responses:
         '200':
           description: A Zone
@@ -242,7 +250,7 @@ paths:
 
     put:
       summary: Modifies basic zone data.
-      description: 'The only fields in the zone structure which can be modified are: kind, masters, account, soa_edit, soa_edit_api, api_rectify, dnssec, and nsec3param. All other fields are ignored.'
+      description: 'The only fields in the zone structure which can be modified are: kind, masters, catalog, account, soa_edit, soa_edit_api, api_rectify, dnssec, and nsec3param. All other fields are ignored.'
       operationId: putZone
       tags:
         - zones
@@ -864,6 +872,69 @@ paths:
           description: 'OK, key was deleted'
         <<: *commonErrors
 
+  '/servers/{server_id}/autoprimaries':
+    parameters:
+      - name: server_id
+        in: path
+        required: true
+        description: 'The id of the server to manage the list of autoprimaries on'
+        type: string
+    get:
+      summary: 'Get a list of autoprimaries'
+      operationId: getAutoprimaries
+      tags:
+        - autoprimary
+      responses:
+        '200':
+          description: OK.
+          schema:
+            $ref: '#/definitions/Autoprimary'
+        <<: *commonErrors
+    post:
+      summary: 'Add an autoprimary'
+      description: 'This methods add a new autoprimary server.'
+      operationId: createAutoprimary
+      tags:
+        - autoprimary
+      parameters:
+        - name: autoprimary
+          description: autoprimary entry to add
+          required: true
+          in: body
+          schema:
+            $ref: '#/definitions/Autoprimary'
+      responses:
+        '201':
+          description: Created
+        <<: *commonErrors
+
+  '/servers/{server_id}/autoprimaries/{ip}/{nameserver}':
+    parameters:
+      - name: server_id
+        in: path
+        required: true
+        description: 'The id of the server to delete the autoprimary from'
+        type: string
+      - name: ip
+        in: path
+        required: true
+        description: 'IP address of autoprimary'
+        type: string
+      - name: nameserver
+        in: path
+        required: true
+        description: 'DNS name of the autoprimary'
+        type: string
+    delete:
+      summary: 'Delete the autoprimary entry'
+      operationId: deleteAutoprimary
+      tags:
+        - autoprimary
+      responses:
+        '204':
+          description: 'OK, key was deleted'
+        <<: *commonErrors
+
 definitions:
   Server:
     title: Server
@@ -917,7 +988,9 @@ definitions:
           - 'Native'
           - 'Master'
           - 'Slave'
-        description: 'Zone kind, one of “Native”, “Master”, “Slave”'
+          - 'Producer'
+          - 'Consumer'
+        description: 'Zone kind, one of “Native”, “Master”, “Slave”, “Producer”, “Consumer”'
       rrsets:
         type: array
         items:
@@ -957,10 +1030,13 @@ definitions:
         description: 'The SOA-EDIT-API metadata item'
       api_rectify:
         type: boolean
-        description: ' Whether or not the zone will be rectified on data changes via the API'
+        description: 'Whether or not the zone will be rectified on data changes via the API'
       zone:
         type: string
         description: 'MAY contain a BIND-style zone file when creating a zone'
+      catalog:
+        type: string
+        description: 'The catalog this zone is a member of'
       account:
         type: string
         description: 'MAY be set. Its value is defined by local policy'
@@ -1070,6 +1146,20 @@ definitions:
         type: string
         description: 'Set to "TSIGKey"'
         readOnly: true
+
+  Autoprimary:
+     title: Autoprimary server
+     description: An autoprimary server that can provision new domains.
+     properties:
+       ip:
+         type: string
+         description: "IP address of the autoprimary server"
+       nameserver:
+         type: string
+         description: "DNS name of the autoprimary server"
+       account:
+         type: string
+         description: "Account name for the autoprimary server"
 
   ConfigSetting:
     title: ConfigSetting

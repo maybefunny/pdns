@@ -24,6 +24,7 @@
 
 #include <string>
 #include <map>
+#include <optional>
 #include <vector>
 #include <inttypes.h>
 #include <sys/un.h>
@@ -33,7 +34,6 @@
 #include "dnsname.hh"
 #include "sholder.hh"
 #include <atomic>
-#include <boost/optional.hpp>
 
 extern GlobalStateHolder<SuffixMatchNode> g_dontThrottleNames;
 extern GlobalStateHolder<NetmaskGroup> g_dontThrottleNetmasks;
@@ -65,8 +65,8 @@ public:
     std::string d_str;
   };
 
-  void send(const Answer&, const std::string* remote = nullptr, unsigned int timeout = 5, int fd = -1);
-  RecursorControlChannel::Answer recv(std::string* remote = nullptr, unsigned int timeout = 5);
+  void send(int remote, const Answer&, unsigned int timeout = 5, int fd_to_pass = -1);
+  RecursorControlChannel::Answer recv(int fd, unsigned int timeout = 5);
 
   int d_fd;
   static std::atomic<bool> stop;
@@ -81,16 +81,22 @@ public:
   RecursorControlParser()
   {
   }
-  static void nop(void){}
+  static void nop(void) {}
   typedef void func_t(void);
 
   RecursorControlChannel::Answer getAnswer(int s, const std::string& question, func_t** func);
 };
 
+enum class StatComponent
+{
+  API,
+  Carbon,
+  RecControl,
+  SNMP
+};
 
-enum class StatComponent { API, Carbon, RecControl, SNMP };
-
-struct StatsMapEntry {
+struct StatsMapEntry
+{
   std::string d_prometheusName;
   std::string d_value;
 };
@@ -99,6 +105,7 @@ class PrefixDashNumberCompare
 {
 private:
   static std::pair<std::string, std::string> prefixAndTrailingNum(const std::string& a);
+
 public:
   bool operator()(const std::string& a, const std::string& b) const;
 };
@@ -117,9 +124,9 @@ struct CarbonConfig
 
 extern GlobalStateHolder<CarbonConfig> g_carbonConfig;
 
-std::vector<std::pair<DNSName, uint16_t> >* pleaseGetQueryRing();
-std::vector<std::pair<DNSName, uint16_t> >* pleaseGetServfailQueryRing();
-std::vector<std::pair<DNSName, uint16_t> >* pleaseGetBogusQueryRing();
+std::vector<std::pair<DNSName, uint16_t>>* pleaseGetQueryRing();
+std::vector<std::pair<DNSName, uint16_t>>* pleaseGetServfailQueryRing();
+std::vector<std::pair<DNSName, uint16_t>>* pleaseGetBogusQueryRing();
 std::vector<ComboAddress>* pleaseGetRemotes();
 std::vector<ComboAddress>* pleaseGetServfailRemotes();
 std::vector<ComboAddress>* pleaseGetBogusRemotes();
@@ -127,7 +134,7 @@ std::vector<ComboAddress>* pleaseGetLargeAnswerRemotes();
 std::vector<ComboAddress>* pleaseGetTimeouts();
 DNSName getRegisteredName(const DNSName& dom);
 std::atomic<unsigned long>* getDynMetric(const std::string& str, const std::string& prometheusName);
-boost::optional<uint64_t> getStatByName(const std::string& name);
+std::optional<uint64_t> getStatByName(const std::string& name);
 bool isStatDisabled(StatComponent component, const std::string& name);
 void disableStat(StatComponent component, const string& name);
 void disableStats(StatComponent component, const string& stats);

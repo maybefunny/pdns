@@ -2,6 +2,107 @@ Changelogs for 4.5.x
 ====================
 
 .. changelog::
+  :version: 4.5.4
+  :released: 25th of March 2022
+
+  This is a security fix release for :doc:`PowerDNS Security Advisory 2022-01 <../security-advisories/powerdns-advisory-2022-01>`.
+  Additionally, because CentOS 8 is End Of Life now, we have switched those builds to Oracle Linux 8. The resulting packages are compatible with RHEL and all derivatives.
+
+  .. change::
+    :tags: Bug Fixes
+    :pullreq: 11454
+
+    Fix validation of incremental zone transfers (IXFRs).
+
+.. changelog::
+  :version: 4.5.3
+  :released: 21th of January 2022
+
+  This is release 4.5.3 of the Authoritative Server.
+  It mostly contains several robustness fixes for the LMDB backend, and for the zone cache.
+  Please see the full list of fixes here:
+
+  .. change::
+    :tags: Bug Fixes
+    :pullreq: 11158
+
+    lmdb, check if the lookup name is part of the zone (Kees Monshouwer)
+
+  .. change::
+    :tags: Bug Fixes
+    :pullreq: 11146
+
+    pdnsutil edit-zone: fix n and e behaviour on increase-serial prompt
+
+  .. change::
+    :tags: Bug Fixes
+    :pullreq: 11123
+
+    improve tcp exception handling (Kees Monshouwer)
+
+  .. change::
+    :tags: Bug Fixes
+    :pullreq: 11123
+
+    lmdb: fix records removal in deleteDomain() (Kees Monshouwer)
+
+  .. change::
+    :tags: Bug Fixes
+    :pullreq: 11002
+
+    2136: apply new TTL to whole RRset, not only to the added record
+
+  .. change::
+    :tags: Improvements
+    :pullreq: 11002
+
+    2136: improve some log messages
+
+.. changelog::
+  :version: 4.5.2
+  :released: 10th of November 2021
+
+  This is release 4.5.2 of the Authoritative Server.
+  It contains several robustness fixes for the bindbackend, and for SOA handling.
+  These fixes are especially important for zone cache users.
+
+  .. change::
+    :tags: Bug Fixes
+    :pullreq: 10968
+
+    bindbackend: skip rejected zones during list and search
+
+  .. change::
+    :tags: Bug Fixes
+    :pullreq: 10964
+
+    make the zone cache more robust for bad data and save some SOA queries for DNSSEC zones (Kees Monshouwer)
+
+  .. change::
+    :tags: Bug Fixes
+    :pullreq: 10962
+
+    api, check SOA location (Kees Monshouwer)
+
+  .. change::
+    :tags: Bug Fixes
+    :pullreq: 10952
+
+    improve dnsname exception handling for SOA records (Kees Monshouwer)
+
+  .. change::
+    :tags: Bug Fixes
+    :pullreq: 10792
+
+    improve SOA parse exception handling (Kees Monshouwer)
+
+  .. change::
+    :tags: Bug Fixes
+    :pullreq: 10778
+
+    try to reload rejected zones in bind-backend once every bind-check-interval (Kees Monshouwer)
+
+.. changelog::
   :version: 4.5.1
   :released: 26th of July 2021
 
@@ -286,9 +387,15 @@ Changelogs for 4.5.x
 
   .. change::
     :tags: Bug Fixes
-    :pullreq: 9766, 9844, 9919, 10074
+    :pullreq: 9766, 9844, 9919
 
     Fixed bugs in the implementations of the ``SVCB``, ``HTTPS``, ``IPSECKEY`` and ``APL`` types.
+
+  .. change::
+    :tags: New Features
+    :pullreq: 10074
+
+    ``SVCB`` improvements, including a new ``svc-autohints`` setting
 
   .. change::
     :tags: New Features

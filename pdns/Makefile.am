@@ -17,6 +17,7 @@ AM_CXXFLAGS = \
 
 AM_LDFLAGS = \
 	$(PROGRAM_LDFLAGS) \
+	$(LIBCRYPTO_LIBS) \
 	$(THREADFLAGS)
 
 AM_LFLAGS = -i
@@ -36,6 +37,10 @@ endif
 
 if LIBSODIUM
 AM_CPPFLAGS +=$(LIBSODIUM_CFLAGS)
+endif
+
+if LIBDECAF
+AM_CPPFLAGS += $(LIBDECAF_CFLAGS)
 endif
 
 EXTRA_DIST = \
@@ -181,9 +186,10 @@ EXTRA_PROGRAMS = \
 
 pdns_server_SOURCES = \
 	arguments.cc arguments.hh \
-	ascii.hh \
 	auth-caches.cc auth-caches.hh \
 	auth-carbon.cc \
+	auth-catalogzone.cc auth-catalogzone.hh \
+	auth-main.cc auth-main.hh \
 	auth-packetcache.cc auth-packetcache.hh \
 	auth-querycache.cc auth-querycache.hh \
 	auth-zonecache.cc auth-zonecache.hh \
@@ -195,11 +201,12 @@ pdns_server_SOURCES = \
 	bind-dnssec.schema.sqlite3.sql.h \
 	bindlexer.l \
 	bindparser.cc \
+	burtle.hh \
 	cachecleaner.hh \
 	circular_buffer.hh \
 	comment.hh \
-	common_startup.cc common_startup.hh \
 	communicator.cc communicator.hh \
+	credentials.cc credentials.hh \
 	dbdnsseckeeper.cc \
 	digests.hh \
 	distributor.hh \
@@ -219,6 +226,7 @@ pdns_server_SOURCES = \
 	dynhandler.cc dynhandler.hh \
 	dynlistener.cc dynlistener.hh \
 	dynmessenger.hh \
+	ednscookies.cc ednscookies.hh \
 	ednsoptions.cc ednsoptions.hh \
 	ednssubnet.cc ednssubnet.hh \
 	histogram.hh \
@@ -227,6 +235,7 @@ pdns_server_SOURCES = \
 	json.cc json.hh \
 	lock.hh \
 	logger.cc logger.hh \
+	logging.hh \
 	lua-auth4.cc lua-auth4.hh \
 	lua-base4.cc lua-base4.hh \
 	mastercommunicator.cc \
@@ -239,10 +248,10 @@ pdns_server_SOURCES = \
 	packetcache.hh \
 	packethandler.cc packethandler.hh \
 	pdnsexception.hh \
+	proxy-protocol.cc proxy-protocol.hh \
 	qtype.cc qtype.hh \
 	query-local-address.hh query-local-address.cc \
 	rcpgenerator.cc \
-	receiver.cc \
 	resolver.cc resolver.hh \
 	responsestats.cc responsestats.hh responsestats-auth.cc \
 	rfc2136handler.cc \
@@ -254,6 +263,7 @@ pdns_server_SOURCES = \
 	signingpipe.cc signingpipe.hh \
 	sillyrecords.cc \
 	slavecommunicator.cc \
+	stat_t.hh \
 	statbag.cc statbag.hh \
 	stubresolver.cc stubresolver.hh \
 	svc-records.cc svc-records.hh \
@@ -321,6 +331,7 @@ endif
 pdnsutil_SOURCES = \
 	arguments.cc \
 	auth-caches.cc auth-caches.hh \
+	auth-catalogzone.cc auth-catalogzone.hh \
 	auth-packetcache.cc auth-packetcache.hh \
 	auth-querycache.cc auth-querycache.hh \
 	auth-zonecache.cc auth-zonecache.hh \
@@ -332,6 +343,7 @@ pdnsutil_SOURCES = \
 	bindparser.yy \
 	cachecleaner.hh \
 	circular_buffer.hh \
+	credentials.cc credentials.hh \
 	dbdnsseckeeper.cc \
 	dns.cc \
 	dns_random.cc \
@@ -345,6 +357,7 @@ pdnsutil_SOURCES = \
 	dnssecsigner.cc \
 	dnswriter.cc dnswriter.hh \
 	dynlistener.cc \
+	ednscookies.cc ednscookies.hh \
 	ednsoptions.cc ednsoptions.hh \
 	ednssubnet.cc \
 	ipcipher.cc ipcipher.hh \
@@ -371,6 +384,8 @@ pdnsutil_SOURCES = \
 	tsigutils.hh tsigutils.cc \
 	ueberbackend.cc \
 	unix_utility.cc \
+	uuid-utils.hh uuid-utils.cc \
+	zonemd.hh zonemd.cc \
 	zoneparser-tng.cc
 
 pdnsutil_LDFLAGS = \
@@ -675,6 +690,7 @@ ixfrdist_SOURCES = \
 	axfr-retriever.cc \
 	base32.cc \
 	base64.cc base64.hh \
+	credentials.cc credentials.hh \
 	dns.cc \
 	dns_random_urandom.cc dns_random.hh \
 	dnslabeltext.cc \
@@ -709,7 +725,6 @@ ixfrdist_SOURCES = \
 	webserver.hh webserver.cc \
 	zoneparser-tng.cc
 
-
 ixfrdist_LDADD = \
 	$(BOOST_PROGRAM_OPTIONS_LIBS) \
 	$(JSON11_LIBS) \
@@ -721,6 +736,10 @@ ixfrdist_LDFLAGS = \
 	$(AM_LDFLAGS) \
 	$(BOOST_PROGRAM_OPTIONS_LDFLAGS) \
 	$(LIBCRYPTO_LDFLAGS)
+
+if LIBSODIUM
+ixfrdist_LDADD += $(LIBSODIUM_LIBS)
+endif
 
 if PKCS11
 ixfrdist_SOURCES += pkcs11signers.cc pkcs11signers.hh
@@ -908,8 +927,11 @@ tsig_tests_LDADD += $(P11KIT1_LIBS)
 endif
 
 speedtest_SOURCES = \
+	arguments.cc arguments.hh \
 	base32.cc \
 	base64.cc base64.hh \
+	credentials.cc credentials.hh \
+	dns_random.cc dns_random.hh \
 	dnslabeltext.cc \
 	dnsname.cc dnsname.hh \
 	dnsparser.cc dnsparser.hh \
@@ -926,8 +948,8 @@ speedtest_SOURCES = \
 	speedtest.cc \
 	statbag.cc \
 	svc-records.cc svc-records.hh \
-        unix_utility.cc \
-        uuid-utils.cc
+	unix_utility.cc \
+	uuid-utils.cc
 
 speedtest_LDFLAGS = $(AM_LDFLAGS) $(LIBCRYPTO_LDFLAGS)
 speedtest_LDADD = $(LIBCRYPTO_LIBS) \
@@ -948,8 +970,8 @@ dnswasher_SOURCES = \
 	statbag.cc \
 	unix_utility.cc
 
-dnswasher_LDFLAGS = 	$(AM_LDFLAGS) $(BOOST_PROGRAM_OPTIONS_LDFLAGS) $(LIBCRYPTO_LDFLAGS)
-dnswasher_LDADD = 	$(BOOST_PROGRAM_OPTIONS_LIBS) $(LIBCRYPTO_LIBS) $(IPCRYPT_LIBS)
+dnswasher_LDFLAGS =	$(AM_LDFLAGS) $(BOOST_PROGRAM_OPTIONS_LDFLAGS) $(LIBCRYPTO_LDFLAGS)
+dnswasher_LDADD =	$(BOOST_PROGRAM_OPTIONS_LIBS) $(LIBCRYPTO_LIBS) $(IPCRYPT_LIBS)
 
 dnsbulktest_SOURCES = \
 	arguments.cc arguments.hh \
@@ -1312,6 +1334,7 @@ testrunner_SOURCES = \
 	base64.cc \
 	bindlexer.l \
 	bindparser.yy \
+	credentials.cc credentials.hh \
 	dbdnsseckeeper.cc \
 	dns.cc \
 	dns_random.cc \
@@ -1345,9 +1368,10 @@ testrunner_SOURCES = \
 	qtype.cc \
 	rcpgenerator.cc \
 	responsestats-auth.cc \
-	responsestats.cc \
+	responsestats.cc responsestats.hh \
 	shuffle.cc shuffle.hh \
 	sillyrecords.cc \
+	stat_t.hh \
 	statbag.cc \
 	stubresolver.hh stubresolver.cc \
 	svc-records.cc svc-records.hh \
@@ -1358,6 +1382,7 @@ testrunner_SOURCES = \
 	test-bindparser_cc.cc \
 	test-common.hh \
 	test-communicator_hh.cc \
+	test-credentials_cc.cc \
 	test-digests_hh.cc \
 	test-distributor_hh.cc \
 	test-dns_random_hh.cc \
@@ -1367,6 +1392,7 @@ testrunner_SOURCES = \
 	test-dnsrecordcontent.cc \
 	test-dnsrecords_cc.cc \
 	test-dnswriter_cc.cc \
+	test-ednscookie_cc.cc \
 	test-ipcrypt_cc.cc \
 	test-iputils_hh.cc \
 	test-ixfr_cc.cc \
@@ -1387,6 +1413,7 @@ testrunner_SOURCES = \
 	test-trusted-notification-proxy_cc.cc \
 	test-tsig.cc \
 	test-ueberbackend_cc.cc \
+	test-zonemd_cc.cc \
 	test-zoneparser_tng_cc.cc \
 	testrunner.cc \
 	threadname.hh threadname.cc \
@@ -1394,12 +1421,13 @@ testrunner_SOURCES = \
 	tsigverifier.cc tsigverifier.hh \
 	ueberbackend.cc ueberbackend.hh \
 	unix_utility.cc \
+	zonemd.cc zonemd.hh \
 	zoneparser-tng.cc zoneparser-tng.hh
 
 testrunner_LDFLAGS = \
 	$(AM_LDFLAGS) \
 	$(LIBCRYPTO_LDFLAGS) \
-	$(BOOST_UNIT_TEST_FRAMEWORK_LDFLAGS) 
+	$(BOOST_UNIT_TEST_FRAMEWORK_LDFLAGS)
 
 testrunner_LDADD = \
 	$(LIBCRYPTO_LIBS) \
@@ -1419,6 +1447,7 @@ endif
 if LIBSODIUM
 testrunner_SOURCES += sodiumsigners.cc
 testrunner_LDADD += $(LIBSODIUM_LIBS)
+speedtest_LDADD += $(LIBSODIUM_LIBS)
 endif
 
 if LIBDECAF
@@ -1461,6 +1490,10 @@ pdns_control_SOURCES = \
 	qtype.cc \
 	statbag.cc \
 	unix_utility.cc
+
+pdns_control_LDFLAGS = \
+       $(AM_LDFLAGS) \
+       $(LIBCRYPTO_LDFLAGS)
 
 if UNIT_TESTS
 noinst_PROGRAMS = testrunner
@@ -1562,6 +1595,8 @@ fuzz_target_dnsdistcache_SOURCES = \
 	dns.cc dns.hh \
 	dnsdist-cache.cc dnsdist-cache.hh \
 	dnsdist-ecs.cc dnsdist-ecs.hh \
+	dnsdist-idstate.hh \
+	dnsdist-protocols.cc dnsdist-protocols.hh \
 	dnslabeltext.cc \
 	dnsname.cc dnsname.hh \
 	dnsparser.cc dnsparser.hh \
@@ -1639,7 +1674,9 @@ if HAVE_SYSTEMD
 pdns.service: pdns.service.in
 	$(AM_V_GEN)sed -e 's![@]sbindir[@]!$(sbindir)!' -e 's![@]service_user[@]!$(service_user)!' -e 's![@]service_group[@]!$(service_group)!' < $< > $@
 if !HAVE_SYSTEMD_WITH_RUNTIME_DIR_ENV
+if HAVE_SYSTEMD_PERCENT_T
 	$(AM_V_GEN)sed -e 's!/pdns_server!& --socket-dir=%t/pdns!' -i $@
+endif
 endif
 if !HAVE_SYSTEMD_LOCK_PERSONALITY
 	$(AM_V_GEN)perl -ni -e 'print unless /^LockPersonality/' $@
@@ -1699,11 +1736,13 @@ endif
 pdns@.service: pdns.service
 	$(AM_V_GEN)sed -e 's!/pdns_server!& --config-name=%i!' \
 	  -e 's!Authoritative Server!& %i!' \
-	  -e 's!RuntimeDirectory=.*!&-%i!' \
 	  -e 's!SyslogIdentifier=.*!&-%i!' \
 	  < $< > $@
+if HAVE_SYSTEMD_PERCENT_T
+	$(AM_V_GEN)sed -e 's!RuntimeDirectory=.*!&-%i!' -i $@
 if !HAVE_SYSTEMD_WITH_RUNTIME_DIR_ENV
 	$(AM_V_GEN)sed -e 's!--socket-dir=[^ ]\+!&-%i !' -i $@
+endif
 endif
 
 systemdsystemunitdir = $(SYSTEMD_DIR)

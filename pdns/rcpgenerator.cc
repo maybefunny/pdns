@@ -23,13 +23,13 @@
 #include "config.h"
 #endif
 #include "rcpgenerator.hh"
-#include "ascii.hh"
 #include "dnsparser.hh"
 #include "misc.hh"
 #include "utility.hh"
 #include <boost/algorithm/string.hpp>
 #include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/replace.hpp>
+#include <boost/format.hpp>
 
 #include <iostream>
 #include "base32.hh"
@@ -79,7 +79,7 @@ void RecordTextReader::xfr64BitInt(uint64_t &val)
 
   size_t pos;
   val=std::stoull(d_string.substr(d_pos), &pos);
-  
+
   d_pos += pos;
 }
 
@@ -92,8 +92,8 @@ void RecordTextReader::xfr32BitInt(uint32_t &val)
     throw RecordTextException("expected digits at position "+std::to_string(d_pos)+" in '"+d_string+"'");
 
   size_t pos;
-  val=pdns_stou(d_string.c_str()+d_pos, &pos);
- 
+  val = pdns::checked_stoi<uint32_t>(d_string.c_str() + d_pos, &pos);
+
   d_pos += pos;
 }
 
@@ -101,7 +101,7 @@ void RecordTextReader::xfrTime(uint32_t &val)
 {
   struct tm tm;
   memset(&tm, 0, sizeof(tm));
-  
+
   uint64_t itmp;
   xfr64BitInt(itmp);
 
@@ -123,7 +123,7 @@ void RecordTextReader::xfrTime(uint32_t &val)
 
   tm.tm_year-=1900;
   tm.tm_mon-=1;
-  val=(uint32_t)Utility::timegm(&tm); 
+  val=(uint32_t)Utility::timegm(&tm);
 }
 
 void RecordTextReader::xfrIP(uint32_t &val)
@@ -157,7 +157,7 @@ void RecordTextReader::xfrIP(uint32_t &val)
       if(octet > 255)
         throw RecordTextException("unable to parse IP address");
     }
-    else if(dns_isspace(d_string.at(d_pos)) || d_string.at(d_pos) == ',') 
+    else if(dns_isspace(d_string.at(d_pos)) || d_string.at(d_pos) == ',')
       break;
     else {
       throw RecordTextException(string("unable to parse IP address, strange character: ")+d_string.at(d_pos));
@@ -181,10 +181,10 @@ void RecordTextReader::xfrIP6(std::string &val)
   struct in6_addr tmpbuf;
 
   skipSpaces();
-  
+
   size_t len;
   // lookup end of value - think of ::ffff encoding too, has dots in it!
-  for(len=0; 
+  for(len=0;
       d_pos+len < d_string.length() && (isxdigit(d_string.at(d_pos+len)) || d_string.at(d_pos+len) == ':' || d_string.at(d_pos+len)=='.');
     len++);
 
@@ -193,7 +193,7 @@ void RecordTextReader::xfrIP6(std::string &val)
 
   // end of value is here, try parse as IPv6
   string address=d_string.substr(d_pos, len);
-  
+
   if (inet_pton(AF_INET6, address.c_str(), &tmpbuf) != 1) {
     throw RecordTextException("while parsing IPv6 address: '" + address + "' is invalid");
   }
@@ -248,7 +248,7 @@ void RecordTextReader::xfr8BitInt(uint8_t &val)
     throw RecordTextException("Overflow reading 8 bit integer from record content"); // fixme improve
 }
 
-// this code should leave all the escapes around 
+// this code should leave all the escapes around
 void RecordTextReader::xfrName(DNSName& val, bool, bool)
 {
   skipSpaces();
@@ -259,7 +259,7 @@ void RecordTextReader::xfrName(DNSName& val, bool, bool)
   while(d_pos < d_end) {
     if(strptr[d_pos]!='\r' && dns_isspace(strptr[d_pos]))
       break;
-      
+
     d_pos++;
   }
   sval = DNSName(std::string(strptr+begin_pos, strptr+d_pos));
@@ -277,9 +277,9 @@ static bool isbase64(char c, bool acceptspace)
     return acceptspace;
   if(c >= '0' && c <= '9')
     return true;
-  if(c >= 'a' && c <= 'z') 
+  if(c >= 'a' && c <= 'z')
     return true;
-  if(c >= 'A' && c <= 'Z') 
+  if(c >= 'A' && c <= 'Z')
     return true;
   if(c=='+' || c=='/' || c=='=')
     return true;
@@ -290,7 +290,7 @@ void RecordTextReader::xfrBlobNoSpaces(string& val, int len) {
   skipSpaces();
   int pos=(int)d_pos;
   const char* strptr=d_string.c_str();
-  while(d_pos < d_end && isbase64(strptr[d_pos], false)) 
+  while(d_pos < d_end && isbase64(strptr[d_pos], false))
     d_pos++;
 
   string tmp;
@@ -298,7 +298,7 @@ void RecordTextReader::xfrBlobNoSpaces(string& val, int len) {
   boost::erase_all(tmp," ");
   val.clear();
   B64Decode(tmp, val);
-  
+
   if (len>-1 && val.size() != static_cast<size_t>(len))
     throw RecordTextException("Record length "+std::to_string(val.size()) + " does not match expected length '"+std::to_string(len));
 }
@@ -310,7 +310,7 @@ void RecordTextReader::xfrBlob(string& val, int)
   const char* strptr=d_string.c_str();
   while(d_pos < d_end && isbase64(strptr[d_pos], true))
     d_pos++;
-  
+
   string tmp;
   tmp.assign(d_string.c_str()+pos, d_string.c_str() + d_pos);
   boost::erase_all(tmp," ");
@@ -347,8 +347,9 @@ void RecordTextReader::xfrSvcParamKeyVals(set<SvcParam>& val)
     // We've reached a space or equals-sign or the end of the string (d_pos is at this char)
     string k = d_string.substr(pos, d_pos - pos);
     SvcParam::SvcParamKey key;
+    bool generic;
     try {
-      key = SvcParam::keyFromString(k);
+      key = SvcParam::keyFromString(k, generic);
     } catch (const std::invalid_argument &e) {
       throw RecordTextException(e.what());
     }
@@ -372,11 +373,22 @@ void RecordTextReader::xfrSvcParamKeyVals(set<SvcParam>& val)
       break;
     case SvcParam::ipv4hint: /* fall-through */
     case SvcParam::ipv6hint: {
-      vector<string> value;
-      xfrSVCBValueList(value);
       vector<ComboAddress> hints;
       bool doAuto{false};
-      try {
+      if (generic) {
+        string value;
+        xfrRFC1035CharString(value);
+        size_t len = key == SvcParam::ipv4hint ? 4 : 16;
+        if (value.size() % len != 0) {
+          throw RecordTextException(k + " in generic format has wrong number of bytes");
+        }
+        for (size_t i=0; i<value.size(); i += len) {
+          auto hint = makeComboAddressFromRaw(static_cast<uint8_t>(key), &value.at(i), len);
+          hints.push_back(hint);
+        }
+      } else {
+        vector<string> value;
+        xfrSVCBValueList(value);
         for (auto const &v: value) {
           if (v == "auto") {
             doAuto = true;
@@ -385,6 +397,8 @@ void RecordTextReader::xfrSvcParamKeyVals(set<SvcParam>& val)
           }
           hints.push_back(ComboAddress(v));
         }
+      }
+      try {
         auto p = SvcParam(key, std::move(hints));
         p.setAutoHint(doAuto);
         val.insert(p);
@@ -396,11 +410,41 @@ void RecordTextReader::xfrSvcParamKeyVals(set<SvcParam>& val)
     }
     case SvcParam::alpn: {
       vector<string> value;
-      xfrSVCBValueList(value);
+      if (generic) {
+        string v;
+        xfrRFC1035CharString(v);
+        size_t spos{0}, len;
+        while (spos < v.length()) {
+          len = v.at(spos);
+          spos += 1;
+          if (len > v.length() - spos) {
+            throw RecordTextException("Length of ALPN value goes over total length of alpn SVC Param");
+          }
+          value.push_back(v.substr(spos, len));
+          spos += len;
+        }
+      } else {
+        xfrSVCBValueList(value);
+      }
       val.insert(SvcParam(key, std::move(value)));
       break;
     }
     case SvcParam::mandatory: {
+      if (generic) {
+        string v;
+        xfrRFC1035CharString(v);
+        if (v.length() % 2 != 0) {
+          throw RecordTextException("Wrong number of bytes in SVC Param " + k);
+        }
+        std::set<SvcParam::SvcParamKey> keys;
+        for (size_t i=0; i < v.length(); i += 2) {
+          uint16_t mand = (v.at(i) << 8);
+          mand += v.at(i+1);
+          keys.insert(SvcParam::SvcParamKey(mand));
+        }
+        val.insert(SvcParam(key, std::move(keys)));
+        break;
+      }
       vector<string> parts;
       xfrSVCBValueList(parts);
       set<string> values(parts.begin(), parts.end());
@@ -409,22 +453,36 @@ void RecordTextReader::xfrSvcParamKeyVals(set<SvcParam>& val)
     }
     case SvcParam::port: {
       uint16_t port;
-      xfr16BitInt(port);
+      if (generic) {
+        string v;
+        xfrRFC1035CharString(v);
+        if (v.length() != 2) {
+          throw RecordTextException("port in generic format has the wrong length, expected 2, got " + std::to_string(v.length()));
+        }
+        port = (v.at(0) << 8);
+        port += v.at(1);
+      } else {
+        xfr16BitInt(port);
+      }
       val.insert(SvcParam(key, port));
       break;
     }
     case SvcParam::ech: {
-      bool haveQuote = d_string.at(d_pos) == '"';
-      if (haveQuote) {
-        d_pos++;
-      }
       string value;
-      xfrBlobNoSpaces(value);
-      if (haveQuote) {
-        if (d_string.at(d_pos) != '"') {
-          throw RecordTextException("ech value starts, but does not end with a '\"' symbol");
+      if (generic) {
+        xfrRFC1035CharString(value);
+      } else {
+        bool haveQuote = d_string.at(d_pos) == '"';
+        if (haveQuote) {
+          d_pos++;
         }
-        d_pos++;
+        xfrBlobNoSpaces(value);
+        if (haveQuote) {
+          if (d_string.at(d_pos) != '"') {
+            throw RecordTextException("ech value starts, but does not end with a '\"' symbol");
+          }
+          d_pos++;
+        }
       }
       val.insert(SvcParam(key, value));
       break;
@@ -468,7 +526,7 @@ static void HEXDecode(const char* begin, const char* end, string& out)
       val = 16*hextodec(*begin);
       mode=1;
     } else {
-      val += hextodec(*begin); 
+      val += hextodec(*begin);
       out.append(1, (char) val);
       mode = 0;
       val = 0;
@@ -673,12 +731,12 @@ void RecordTextWriter::xfrIP6(const std::string& val)
 
   if(!d_string.empty())
    d_string.append(1,' ');
-  
+
   val.copy(tmpbuf,16);
 
   if (inet_ntop(AF_INET6, tmpbuf, addrbuf, sizeof addrbuf) == nullptr)
     throw RecordTextException("Unable to convert to ipv6 address");
-  
+
   d_string += std::string(addrbuf);
 }
 
@@ -701,7 +759,7 @@ void RecordTextWriter::xfrTime(const uint32_t& val)
 {
   if(!d_string.empty())
     d_string.append(1,' ');
-  
+
   struct tm tm;
   time_t time=val; // Y2038 bug!
   gmtime_r(&time, &tm);
@@ -726,7 +784,7 @@ void RecordTextWriter::xfrName(const DNSName& val, bool, bool noDot)
 {
   if(!d_string.empty())
     d_string.append(1,' ');
-  
+
   if(d_nodot) {
     d_string+=val.toStringRootDot();
   }
@@ -903,7 +961,7 @@ int main(int argc, char**argv)
 try
 {
   RecordTextReader rtr(argv[1], argv[2]);
-  
+
   unsigned int order, pref;
   string flags, services, regexp, replacement;
   string mx;
@@ -929,7 +987,7 @@ try
   rtw.xfrName(replacement);
 
   cout<<"Regenerated: '"<<out<<"'\n";
-  
+
 }
 catch(std::exception& e)
 {

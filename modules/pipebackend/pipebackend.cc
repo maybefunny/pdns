@@ -66,10 +66,10 @@ void CoWrapper::launch()
     throw ArgException("pipe-command is not specified");
 
   if (isUnixSocket(d_command)) {
-    d_cp = std::unique_ptr<CoRemote>(new UnixRemote(d_command, d_timeout));
+    d_cp = std::make_unique<UnixRemote>(d_command, d_timeout);
   }
   else {
-    auto coprocess = std::unique_ptr<CoProcess>(new CoProcess(d_command, d_timeout));
+    auto coprocess = std::make_unique<CoProcess>(d_command, d_timeout);
     coprocess->launch();
     d_cp = std::move(coprocess);
   }
@@ -130,11 +130,11 @@ void PipeBackend::launch()
 
   try {
     if (!getArg("regex").empty()) {
-      d_regex = std::unique_ptr<Regex>(new Regex(getArg("regex")));
+      d_regex = std::make_unique<Regex>(getArg("regex"));
     }
     d_regexstr = getArg("regex");
     d_abiVersion = getArgAsNum("abi-version");
-    d_coproc = unique_ptr<CoWrapper>(new CoWrapper(getArg("command"), getArgAsNum("timeout"), getArgAsNum("abi-version")));
+    d_coproc = std::make_unique<CoWrapper>(getArg("command"), getArgAsNum("timeout"), getArgAsNum("abi-version"));
   }
 
   catch (const ArgException& A) {
@@ -172,7 +172,7 @@ void PipeBackend::lookup(const QType& qtype, const DNSName& qname, int zoneId, D
       if (pkt_p) {
         localIP = pkt_p->getLocal().toString();
         realRemote = pkt_p->getRealRemote();
-        remoteIP = pkt_p->getRemote().toString();
+        remoteIP = pkt_p->getInnerRemote().toString();
       }
       // abi-version = 1
       // type    qname           qclass  qtype   id      remote-ip-address
@@ -315,8 +315,8 @@ bool PipeBackend::get(DNSResourceRecord& r)
         }
         r.qname = DNSName(parts[1 + extraFields]);
         r.qtype = parts[3 + extraFields];
-        r.ttl = pdns_stou(parts[4 + extraFields]);
-        r.domain_id = std::stoi(parts[5 + extraFields]);
+        pdns::checked_stoi_into(r.ttl, parts[4 + extraFields]);
+        pdns::checked_stoi_into(r.domain_id, parts[5 + extraFields]);
 
         if (r.qtype.getCode() != QType::MX && r.qtype.getCode() != QType::SRV) {
           r.content.clear();

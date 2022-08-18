@@ -24,6 +24,48 @@
 
 #include "dnsdist-rings.hh"
 
+void Rings::setCapacity(size_t newCapacity, size_t numberOfShards)
+{
+  if (d_initialized) {
+    throw std::runtime_error("Rings::setCapacity() should not be called once the rings have been initialized");
+  }
+  d_capacity = newCapacity;
+  d_numberOfShards = numberOfShards;
+}
+
+void Rings::init()
+{
+  if (d_initialized.exchange(true)) {
+    throw std::runtime_error("Rings::init() should only be called once");
+  }
+
+  if (d_numberOfShards <= 1) {
+    d_nbLockTries = 0;
+  }
+
+  d_shards.resize(d_numberOfShards);
+
+  /* resize all the rings */
+  for (auto& shard : d_shards) {
+    shard = std::make_unique<Shard>();
+    shard->queryRing.lock()->set_capacity(d_capacity / d_numberOfShards);
+    shard->respRing.lock()->set_capacity(d_capacity / d_numberOfShards);
+  }
+
+  /* we just recreated the shards so they are now empty */
+  d_nbQueryEntries = 0;
+  d_nbResponseEntries = 0;
+}
+
+void Rings::setNumberOfLockRetries(size_t retries)
+{
+  if (d_numberOfShards <= 1) {
+    d_nbLockTries = 0;
+  } else {
+    d_nbLockTries = retries;
+  }
+}
+
 size_t Rings::numDistinctRequestors()
 {
   std::set<ComboAddress, ComboAddress::addressOnlyLessThan> s;
@@ -69,9 +111,9 @@ std::unordered_map<int, vector<boost::variant<string,double>>> Rings::getTopBand
 	       });
   std::unordered_map<int, vector<boost::variant<string,double>>> ret;
   uint64_t rest = 0;
-  unsigned int count = 1;
+  int count = 1;
   for(const auto& rc : rcounts) {
-    if(count==numentries+1) {
+    if (count == static_cast<int>(numentries + 1)) {
       rest+=rc.first;
     }
     else {
@@ -108,9 +150,9 @@ size_t Rings::loadFromFile(const std::string& filepath, const struct timespec& n
     vector<string> parts;
     stringtok(parts, line, " \t,");
 
-    if (parts.size() == 7) {
+    if (parts.size() == 8) {
     }
-    else if (parts.size() >= 10 && parts.size() <= 12) {
+    else if (parts.size() >= 11 && parts.size() <= 13) {
       isResponse = true;
     }
     else {
@@ -138,7 +180,7 @@ size_t Rings::loadFromFile(const std::string& filepath, const struct timespec& n
 
     ComboAddress from(parts.at(idx++));
     ComboAddress to;
-
+    dnsdist::Protocol protocol(parts.at(idx++));
     if (isResponse) {
       to = ComboAddress(parts.at(idx++));
     }
@@ -148,10 +190,10 @@ size_t Rings::loadFromFile(const std::string& filepath, const struct timespec& n
     QType qtype(QType::chartocode(parts.at(idx++).c_str()));
 
     if (isResponse) {
-      insertResponse(when, from, qname, qtype.getCode(), 0, 0, dh, to);
+      insertResponse(when, from, qname, qtype.getCode(), 0, 0, dh, to, protocol);
     }
     else {
-      insertQuery(when, from, qname, qtype.getCode(), 0, dh);
+      insertQuery(when, from, qname, qtype.getCode(), 0, dh, protocol);
     }
     ++inserted;
   }

@@ -68,6 +68,12 @@ addresses.
 
 This will pick from the viable IP addresses the one deemed closest to the user.
 
+LUA records can also contain more complex code, for example::
+
+    www    IN    LUA    A    ";if countryCode('US') then return {'192.0.2.1','192.0.2.2','198.51.100.1'} else return '192.0.2.2' end"
+
+As you can see you can return both single string value or array of strings. 
+
 Using LUA Records with Generic SQL backends
 -------------------------------------------
 
@@ -177,6 +183,8 @@ separate records. The full example from above can also be written as::
                                   "return ifurlup('https://www.lua.org/',        "
                                   "{EUips, USAips}, settings)                    " )
 
+.. _lua-details-security:
+
 Details & Security
 ------------------
 LUA records are synthesized on query. They can also be transferred via AXFR
@@ -211,7 +219,7 @@ The default mode of operation for LUA records is to create a fresh Lua state for
 This way, different LUA records cannot accidentally interfere with each other, by leaving around global objects, or perhaps even deleting relevant functions.
 However, creating a Lua state (and registering all our functions for it, see Reference below) takes measurable time.
 For users that are confident they can write Lua scripts that will not interfere with eachother, a mode is supported where Lua states are created on the first query, and then reused forever.
-Note that the state is per-thread, so while data sharing between LUA invocations is possible (useful for caching and reducing the cost of ``require``), there is not a single shared Lua environment.
+Note that the state is per-thread (for UDP, plus one shared state for all TCP), so while data sharing between LUA invocations is possible (useful for caching and reducing the cost of ``require``), there is no single shared Lua environment.
 In non-scientific testing this has yielded up to 10x QPS increases.
 
 To use this mode, set ``enable-lua-records=shared``.

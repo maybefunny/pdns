@@ -32,8 +32,14 @@ std::string keyConv(const T& t)
      nl -> nl0
      
   */
-  if (t.isRoot())
+  if (t.empty()) {
+    throw std::out_of_range(std::string(__PRETTY_FUNCTION__) + " Attempt to serialize an unset dnsname");
+  }
+
+  if (t.isRoot()) {
     return std::string(1, (char)0);
+  }
+
   std::string in = t.labelReverse().toDNSStringLC(); // www.ds9a.nl is now 2nl4ds9a3www0
   std::string ret;
   ret.reserve(in.size());
@@ -69,12 +75,24 @@ public:
   bool feedEnts3(int domain_id, const DNSName& domain, map<DNSName, bool>& nonterm, const NSEC3PARAMRecordContent& ns3prc, bool narrow) override;
   bool replaceRRSet(uint32_t domain_id, const DNSName& qname, const QType& qt, const vector<DNSResourceRecord>& rrset) override;
 
-  void getAllDomains(vector<DomainInfo>* domains, bool include_disabled = false) override;
+  void getAllDomains(vector<DomainInfo>* domains, bool doSerial, bool include_disabled) override;
   void lookup(const QType& type, const DNSName& qdomain, int zoneId, DNSPacket* p = nullptr) override;
   bool get(DNSResourceRecord& rr) override;
   bool get(DNSZoneRecord& dzr) override;
 
+  // secondary support
   void getUnfreshSlaveInfos(vector<DomainInfo>* domains) override;
+  void setStale(uint32_t domain_id) override;
+  void setFresh(uint32_t domain_id) override;
+
+  // primary support
+  void getUpdatedMasters(vector<DomainInfo>& updatedDomains, std::unordered_set<DNSName>& catalogs, CatalogHashMap& catalogHashes) override;
+  void setNotified(uint32_t id, uint32_t serial) override;
+
+  // catalog zones
+  bool getCatalogMembers(const DNSName& catalog, vector<CatalogInfo>& members, CatalogInfo::CatalogType type) override;
+  bool setOptions(const DNSName& domain, const std::string& options) override;
+  bool setCatalog(const DNSName& domain, const DNSName& options) override;
 
   bool setMasters(const DNSName& domain, const vector<ComboAddress>& masters) override;
   bool setKind(const DNSName& domain, const DomainInfo::DomainKind kind) override;
@@ -97,9 +115,6 @@ public:
   }
 
   bool setDomainMetadata(const DNSName& name, const std::string& kind, const std::vector<std::string>& meta) override;
-  void setStale(uint32_t domain_id) override;
-  void setFresh(uint32_t domain_id) override;
-  void setNotified(uint32_t id, uint32_t serial) override;
   bool setAccount(const DNSName& domain, const std::string& account) override;
   bool deleteDomain(const DNSName& domain) override;
 
@@ -112,7 +127,7 @@ public:
   bool unpublishDomainKey(const DNSName& name, unsigned int id) override;
 
   // TSIG
-  bool getTSIGKey(const DNSName& name, DNSName* algorithm, string* content) override;
+  bool getTSIGKey(const DNSName& name, DNSName& algorithm, string& content) override;
   bool setTSIGKey(const DNSName& name, const DNSName& algorithm, const string& content) override;
   bool deleteTSIGKey(const DNSName& name) override;
   bool getTSIGKeys(std::vector<struct TSIGKey>& keys) override;
@@ -213,9 +228,9 @@ public:
   {
     DNSName domain;
     std::string content;
-    unsigned int flags;
-    bool active;
-    bool published;
+    unsigned int flags{0};
+    bool active{true};
+    bool published{true};
   };
   class LMDBResourceRecord : public DNSResourceRecord
   {
@@ -305,5 +320,6 @@ private:
   DNSName d_transactiondomain;
   uint32_t d_transactiondomainid;
   bool d_dolog;
+  bool d_random_ids;
   DTime d_dtime; // used only for logging
 };

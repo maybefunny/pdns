@@ -95,7 +95,7 @@ void Logger::error(const std::string& err, const std::string& msg) const
 
 std::shared_ptr<Logr::Logger> Logger::v(size_t level) const
 {
-  auto res = std::make_shared<Logger>(getptr(), boost::none, getVerbosity(), level + _level, _callback);
+  auto res = std::make_shared<Logger>(getptr(), _name, getVerbosity(), level + _level, _callback);
   return res;
 }
 
@@ -104,27 +104,6 @@ std::shared_ptr<Logr::Logger> Logger::withValues(const std::map<std::string, std
   auto res = std::make_shared<Logger>(getptr(), _name, getVerbosity(), _level, _callback);
   res->_values = values;
   return res;
-}
-
-template struct Loggable<DNSName>;
-template struct Loggable<ComboAddress>;
-template struct Loggable<std::string>;
-template struct Loggable<size_t>;
-
-template <>
-std::string Loggable<DNSName>::to_string() const
-{
-  return _t.toLogString();
-}
-template <>
-std::string Loggable<ComboAddress>::to_string() const
-{
-  return _t.toLogString();
-}
-template <>
-std::string Loggable<std::string>::to_string() const
-{
-  return _t;
 }
 
 std::shared_ptr<Logr::Logger> Logger::withName(const std::string& name) const
@@ -177,3 +156,4 @@ Logger::~Logger()
 };
 
 std::shared_ptr<Logging::Logger> g_slog{nullptr};
+bool g_slogStructured = true;

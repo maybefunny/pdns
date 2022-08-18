@@ -59,9 +59,9 @@ static Json::object emitRecord(const string& zoneName, const DNSName &DNSqname, 
   string retval;
   g_numRecords++;
   string content(ocontent);
-  if(qtype == "MX" || qtype == "SRV") { 
-    prio=pdns_stou(content);
-    
+  if(qtype == "MX" || qtype == "SRV") {
+    pdns::checked_stoi_into(prio, content);
+
     string::size_type pos = content.find_first_not_of("0123456789");
     if(pos != string::npos)
       boost::erase_head(content, pos);
@@ -69,7 +69,7 @@ static Json::object emitRecord(const string& zoneName, const DNSName &DNSqname, 
   }
 
   Json::object dict;
- 
+
   dict["name"] = DNSqname.toString();
   dict["type"] = qtype;
   dict["ttl"] = ttl;
@@ -79,7 +79,7 @@ static Json::object emitRecord(const string& zoneName, const DNSName &DNSqname, 
   return dict;
 }
 
-/* 2 modes of operation, either --named or --zone (the latter needs $ORIGIN) 
+/* 2 modes of operation, either --named or --zone (the latter needs $ORIGIN)
    1 further mode: --mysql
 */
 
@@ -97,13 +97,14 @@ try
 
     reportAllTypes();
     std::ios_base::sync_with_stdio(false);
-   
+
     ::arg().setSwitch("verbose","Verbose comments on operation")="no";
     ::arg().setSwitch("on-error-resume-next","Continue after errors")="no";
     ::arg().set("zone","Zonefile to parse")="";
     ::arg().set("zone-name","Specify an $ORIGIN in case it is not present")="";
     ::arg().set("named-conf","Bind 8/9 named.conf to parse")="";
     ::arg().set("max-generate-steps", "Maximum number of $GENERATE steps when loading a zone from a file")="0";
+    ::arg().set("max-include-depth", "Maximum level of nested $INCLUDE depth when loading a zone from a file")="20";
 
     ::arg().setCmd("help","Provide a helpful message");
     ::arg().setCmd("version","Print the version");
@@ -131,7 +132,7 @@ try
       cerr<<::arg().helpstring()<<endl;
       exit(1);
     }
-  
+
     namedfile=::arg()["named-conf"];
     zonefile=::arg()["zone"];
 
@@ -141,7 +142,7 @@ try
       BindParser BP;
       BP.setVerbose(::arg().mustDo("verbose"));
       BP.parse(namedfile.empty() ? "./named.conf" : namedfile);
-    
+
       vector<BindDomainInfo> domains=BP.getDomains();
       struct stat st;
       for(auto & domain : domains) {
@@ -150,7 +151,7 @@ try
           domain.d_ino = st.st_ino;
         }
       }
-      
+
       sort(domains.begin(), domains.end()); // put stuff in inode order
 
       int numdomains=domains.size();
@@ -165,16 +166,17 @@ try
             cerr<<" Warning! Skipping '"<<i->type<<"' zone '"<<i->name<<"'"<<endl;
             continue;
           }
-          lines.clear(); 
+          lines.clear();
           try {
             Json::object obj;
             Json::array recs;
             ZoneParserTNG zpt(i->filename, i->name, BP.getDirectory());
             zpt.setMaxGenerateSteps(::arg().asNum("max-generate-steps"));
+            zpt.setMaxIncludes(::arg().asNum("max-include-depth"));
             DNSResourceRecord rr;
             obj["name"] = i->name.toString();
 
-            while(zpt.get(rr)) 
+            while(zpt.get(rr))
               recs.push_back(emitRecord(i->name.toString(), rr.qname, rr.qtype.toString(), rr.content, rr.ttl));
             obj["records"] = recs;
             Json tmp = obj;
@@ -210,7 +212,7 @@ try
 
       obj["name"] = ::arg()["zone-name"];
 
-      while(zpt.get(rr)) 
+      while(zpt.get(rr))
         records.push_back(emitRecord(::arg()["zone-name"], rr.qname, rr.qtype.toString(), rr.content, rr.ttl));
       obj["records"] = records;
 
@@ -223,7 +225,7 @@ try
     cerr<<num_domainsdone<<" domains were fully parsed, containing "<<g_numRecords<<" records\n";
 
   return 0;
-    
+
 }
 catch(PDNSException &ae) {
   cerr<<"\nFatal error: "<<ae.reason<<endl;

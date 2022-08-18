@@ -26,10 +26,13 @@
 #include "sortlist.hh"
 #include "filterpo.hh"
 #include "validate.hh"
+#include "rec-zonetocache.hh"
+#include "logging.hh"
+#include "fstrm_logger.hh"
 
 struct ProtobufExportConfig
 {
-  std::set<uint16_t> exportTypes = { QType::A, QType::AAAA, QType::CNAME };
+  std::set<uint16_t> exportTypes = {QType::A, QType::AAAA, QType::CNAME};
   std::vector<ComboAddress> servers;
   uint64_t maxQueuedEntries{100};
   uint16_t timeout{2};
@@ -39,6 +42,7 @@ struct ProtobufExportConfig
   bool logQueries{true};
   bool logResponses{true};
   bool taggedOnly{false};
+  bool logMappedFrom{false};
 };
 
 struct FrameStreamExportConfig
@@ -55,24 +59,47 @@ struct FrameStreamExportConfig
   unsigned reopenInterval{0};
 };
 
-struct TrustAnchorFileInfo {
+bool operator==(const FrameStreamExportConfig& configA, const FrameStreamExportConfig& configB);
+bool operator!=(const FrameStreamExportConfig& configA, const FrameStreamExportConfig& configB);
+
+struct TrustAnchorFileInfo
+{
   uint32_t interval{24};
   std::string fname;
 };
 
-class LuaConfigItems 
+enum class AdditionalMode : uint8_t
+{
+  Ignore,
+  CacheOnly,
+  CacheOnlyRequireAuth,
+  ResolveImmediately,
+  ResolveDeferred
+};
+
+struct ProxyByTableValue
+{
+  ComboAddress address;
+  boost::optional<SuffixMatchNode> suffixMatchNode;
+};
+
+using ProxyMapping = NetmaskTree<ProxyByTableValue, Netmask>;
+
+class LuaConfigItems
 {
 public:
   LuaConfigItems();
   SortList sortlist;
   DNSFilterEngine dfe;
   TrustAnchorFileInfo trustAnchorFileInfo; // Used to update the Trust Anchors from file periodically
-  map<DNSName,dsmap_t> dsAnchors;
-  map<DNSName,std::string> negAnchors;
+  map<DNSName, dsmap_t> dsAnchors;
+  map<DNSName, std::string> negAnchors;
+  map<DNSName, RecZoneToCache::Config> ztcConfigs;
+  std::map<QType, std::pair<std::set<QType>, AdditionalMode>> allowAdditionalQTypes;
   ProtobufExportConfig protobufExportConfig;
   ProtobufExportConfig outgoingProtobufExportConfig;
   FrameStreamExportConfig frameStreamExportConfig;
-
+  std::shared_ptr<Logr::Logger> d_slog;
   /* we need to increment this every time the configuration
      is reloaded, so we know if we need to reload the protobuf
      remote loggers */
@@ -85,9 +112,9 @@ extern GlobalStateHolder<LuaConfigItems> g_luaconfs;
 
 struct luaConfigDelayedThreads
 {
-  std::vector<std::tuple<std::vector<ComboAddress>, boost::optional<DNSFilterEngine::Policy>, bool, uint32_t, size_t, TSIGTriplet, size_t, ComboAddress, uint16_t, uint32_t, std::shared_ptr<SOARecordContent>, std::string> > rpzPrimaryThreads;
+  // Please make sure that the tuple below only contains value types since they are used as parameters in a thread ct
+  std::vector<std::tuple<std::vector<ComboAddress>, boost::optional<DNSFilterEngine::Policy>, bool, uint32_t, size_t, TSIGTriplet, size_t, ComboAddress, uint16_t, uint32_t, std::shared_ptr<SOARecordContent>, std::string>> rpzPrimaryThreads;
 };
 
-void loadRecursorLuaConfig(const std::string& fname, luaConfigDelayedThreads& delayedThreads);
+void loadRecursorLuaConfig(const std::string& fname, luaConfigDelayedThreads& delayedThreads, ProxyMapping&);
 void startLuaConfigDelayedThreads(const luaConfigDelayedThreads& delayedThreads, uint64_t generation);
-

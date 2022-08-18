@@ -2,6 +2,8 @@
 #include <boost/test/unit_test.hpp>
 
 #include "test-syncres_cc.hh"
+#include "taskqueue.hh"
+#include "rec-taskqueue.hh"
 
 BOOST_AUTO_TEST_SUITE(syncres_cc1)
 
@@ -346,7 +348,7 @@ BOOST_AUTO_TEST_CASE(test_edns_formerr_but_edns_enabled)
   BOOST_CHECK_EQUAL(ret.size(), 0U);
   BOOST_CHECK_EQUAL(queriesWithEDNS, 26U);
   BOOST_CHECK_EQUAL(queriesWithoutEDNS, 0U);
-  BOOST_CHECK_EQUAL(SyncRes::getEDNSStatusesSize(), 26U);
+  BOOST_CHECK_EQUAL(SyncRes::getEDNSStatusesSize(), 0U);
   BOOST_CHECK_EQUAL(usedServers.size(), 26U);
   for (const auto& server : usedServers) {
     BOOST_CHECK_EQUAL(SyncRes::getEDNSStatus(server), SyncRes::EDNSStatus::EDNSOK);
@@ -1000,6 +1002,89 @@ BOOST_AUTO_TEST_CASE(test_glueless_referral)
   BOOST_CHECK_EQUAL(ret[0].d_name, target);
 }
 
+BOOST_AUTO_TEST_CASE(test_glueless_referral_aaaa_task)
+{
+  std::unique_ptr<SyncRes> sr;
+  initSR(sr);
+
+  primeHints();
+
+  const DNSName target("powerdns.com.");
+
+  sr->setAsyncCallback([target](const ComboAddress& ip, const DNSName& domain, int type, bool doTCP, bool sendRDQuery, int EDNS0Level, struct timeval* now, boost::optional<Netmask>& srcmask, boost::optional<const ResolveContext&> context, LWResult* res, bool* chained) {
+    if (isRootServer(ip)) {
+      setLWResult(res, 0, false, false, true);
+
+      if (domain.isPartOf(DNSName("com."))) {
+        addRecordToLW(res, "com.", QType::NS, "a.gtld-servers.net.", DNSResourceRecord::AUTHORITY, 172800);
+      }
+      else if (domain.isPartOf(DNSName("org."))) {
+        addRecordToLW(res, "org.", QType::NS, "a.gtld-servers.net.", DNSResourceRecord::AUTHORITY, 172800);
+      }
+      else {
+        setLWResult(res, RCode::NXDomain, false, false, true);
+        return LWResult::Result::Success;
+      }
+
+      addRecordToLW(res, "a.gtld-servers.net.", QType::A, "192.0.2.1", DNSResourceRecord::ADDITIONAL, 3600);
+      addRecordToLW(res, "a.gtld-servers.net.", QType::AAAA, "2001:DB8::1", DNSResourceRecord::ADDITIONAL, 3600);
+      return LWResult::Result::Success;
+    }
+    else if (ip == ComboAddress("192.0.2.1:53") || ip == ComboAddress("[2001:DB8::1]:53")) {
+      if (domain == target) {
+        setLWResult(res, 0, false, false, true);
+        addRecordToLW(res, "powerdns.com.", QType::NS, "pdns-public-ns1.powerdns.org.", DNSResourceRecord::AUTHORITY, 172800);
+        addRecordToLW(res, "powerdns.com.", QType::NS, "pdns-public-ns2.powerdns.org.", DNSResourceRecord::AUTHORITY, 172800);
+        return LWResult::Result::Success;
+      }
+      else if (domain == DNSName("pdns-public-ns1.powerdns.org.")) {
+        setLWResult(res, 0, true, false, true);
+        if (type == QType::A) {
+          addRecordToLW(res, "pdns-public-ns1.powerdns.org.", QType::A, "192.0.2.2");
+        }
+        else {
+          addRecordToLW(res, "pdns-public-ns1.powerdns.org.", QType::AAAA, "2001:DB8::2");
+        }
+        return LWResult::Result::Success;
+      }
+      else if (domain == DNSName("pdns-public-ns2.powerdns.org.")) {
+        setLWResult(res, 0, true, false, true);
+        if (type == QType::A) {
+          addRecordToLW(res, "pdns-public-ns2.powerdns.org.", QType::A, "192.0.2.3");
+        }
+        else {
+          addRecordToLW(res, "pdns-public-ns2.powerdns.org.", QType::AAAA, "2001:DB8::3");
+        }
+        return LWResult::Result::Success;
+      }
+
+      setLWResult(res, RCode::NXDomain, false, false, true);
+      return LWResult::Result::Success;
+    }
+    else if (ip == ComboAddress("192.0.2.2:53") || ip == ComboAddress("192.0.2.3:53") || ip == ComboAddress("[2001:DB8::2]:53") || ip == ComboAddress("[2001:DB8::3]:53")) {
+      setLWResult(res, 0, true, false, true);
+      addRecordToLW(res, target, QType::A, "192.0.2.4");
+      return LWResult::Result::Success;
+    }
+    else {
+      return LWResult::Result::Timeout;
+    }
+  });
+
+  vector<DNSRecord> ret;
+  int res = sr->beginResolve(target, QType(QType::A), QClass::IN, ret);
+  BOOST_CHECK_EQUAL(res, RCode::NoError);
+  BOOST_REQUIRE_EQUAL(ret.size(), 1U);
+  BOOST_CHECK(ret[0].d_type == QType::A);
+  BOOST_CHECK_EQUAL(ret[0].d_name, target);
+
+  // One task should be submitted
+  BOOST_REQUIRE_EQUAL(getTaskSize(), 1U);
+  auto task = taskQueuePop();
+  BOOST_CHECK(task.d_qname == DNSName("pdns-public-ns1.powerdns.org") || task.d_qname == DNSName("pdns-public-ns2.powerdns.org"));
+  BOOST_CHECK_EQUAL(task.d_qtype, QType::AAAA);
+}
+
 BOOST_AUTO_TEST_CASE(test_edns_subnet_by_domain)
 {
   std::unique_ptr<SyncRes> sr;
@@ -1486,7 +1571,7 @@ BOOST_AUTO_TEST_CASE(test_cname_loop)
 
   // Again to check cache
   try {
-    res = sr->beginResolve(target, QType(QType::A), QClass::IN, ret);
+    sr->beginResolve(target, QType(QType::A), QClass::IN, ret);
     BOOST_CHECK(false);
   }
   catch (const ImmediateServFailException& ex) {
@@ -1554,7 +1639,7 @@ BOOST_AUTO_TEST_CASE(test_cname_long_loop)
 
   // And again to check cache
   try {
-    res = sr->beginResolve(target1, QType(QType::A), QClass::IN, ret);
+    sr->beginResolve(target1, QType(QType::A), QClass::IN, ret);
     BOOST_CHECK(false);
   }
   catch (const ImmediateServFailException& ex) {
@@ -1812,8 +1897,8 @@ BOOST_AUTO_TEST_CASE(test_dname_dnssec_secure)
   sr->setAsyncCallback([dnameOwner, dnameTarget, target, cnameTarget, keys, &queries](const ComboAddress& ip, const DNSName& domain, int type, bool doTCP, bool sendRDQuery, int EDNS0Level, struct timeval* now, boost::optional<Netmask>& srcmask, boost::optional<const ResolveContext&> context, LWResult* res, bool* chained) {
     queries++;
     /* We don't use the genericDSAndDNSKEYHandler here, as it would deny names existing at the wrong level of the tree, due to the way computeZoneCuts works
-       * As such, we need to do some more work to make the answers correct.
-       */
+     * As such, we need to do some more work to make the answers correct.
+     */
 
     if (isRootServer(ip)) {
       if (domain.countLabels() == 0 && type == QType::DNSKEY) { // .|DNSKEY
@@ -1918,6 +2003,110 @@ BOOST_AUTO_TEST_CASE(test_dname_dnssec_secure)
   BOOST_REQUIRE_EQUAL(ret.size(), 5U); /* DNAME + RRSIG(DNAME) + CNAME + A + RRSIG(A) */
 
   BOOST_CHECK_EQUAL(queries, 7U);
+
+  BOOST_REQUIRE(ret[0].d_type == QType::DNAME);
+  BOOST_CHECK(ret[0].d_name == dnameOwner);
+  BOOST_CHECK_EQUAL(getRR<DNAMERecordContent>(ret[0])->getTarget(), dnameTarget);
+
+  BOOST_CHECK(ret[1].d_type == QType::RRSIG);
+  BOOST_CHECK_EQUAL(ret[1].d_name, dnameOwner);
+
+  BOOST_CHECK(ret[2].d_type == QType::CNAME);
+  BOOST_CHECK_EQUAL(ret[2].d_name, target);
+
+  BOOST_CHECK(ret[3].d_type == QType::A);
+  BOOST_CHECK_EQUAL(ret[3].d_name, cnameTarget);
+
+  BOOST_CHECK(ret[4].d_type == QType::RRSIG);
+  BOOST_CHECK_EQUAL(ret[4].d_name, cnameTarget);
+}
+
+BOOST_AUTO_TEST_CASE(test_dname_plus_ns_dnssec_secure)
+{
+  std::unique_ptr<SyncRes> sr;
+  initSR(sr, true);
+  setDNSSECValidation(sr, DNSSECMode::ValidateAll);
+
+  primeHints();
+
+  const DNSName dnameOwner("powerdns");
+  const DNSName dnameTarget("example");
+
+  const DNSName target("dname.powerdns");
+  const DNSName cnameTarget("dname.example");
+
+  testkeysset_t keys;
+
+  auto luaconfsCopy = g_luaconfs.getCopy();
+  luaconfsCopy.dsAnchors.clear();
+  generateKeyMaterial(g_rootdnsname, DNSSECKeeper::ECDSA256, DNSSECKeeper::DIGEST_SHA256, keys, luaconfsCopy.dsAnchors);
+  generateKeyMaterial(dnameTarget, DNSSECKeeper::ECDSA256, DNSSECKeeper::DIGEST_SHA256, keys);
+  g_luaconfs.setState(luaconfsCopy);
+
+  size_t queries = 0;
+
+  sr->setAsyncCallback([dnameOwner, dnameTarget, target, cnameTarget, keys, &queries](const ComboAddress& ip, const DNSName& domain, int type, bool doTCP, bool sendRDQuery, int EDNS0Level, struct timeval* now, boost::optional<Netmask>& srcmask, boost::optional<const ResolveContext&> context, LWResult* res, bool* chained) {
+    queries++;
+
+    if (type == QType::DS || type == QType::DNSKEY) {
+      return genericDSAndDNSKEYHandler(res, domain, domain, type, keys, false);
+    }
+
+    if (domain.isPartOf(dnameOwner)) {
+      setLWResult(res, 0, true, false, true);
+      addRecordToLW(res, dnameOwner, QType::DNAME, dnameTarget.toString());
+      addRRSIG(keys, res->d_records, DNSName("."), 300);
+      addRecordToLW(res, domain, QType::CNAME, cnameTarget.toString()); // CNAME from a DNAME is not signed
+
+      addRecordToLW(res, dnameTarget, QType::NS, "a.gtld-servers.net.", DNSResourceRecord::AUTHORITY, 172800);
+      addDS(dnameTarget, 300, res->d_records, keys);
+      addRRSIG(keys, res->d_records, DNSName("."), 300);
+      addRecordToLW(res, "a.gtld-servers.net.", QType::A, "192.0.2.1", DNSResourceRecord::ADDITIONAL, 3600);
+      return LWResult::Result::Success;
+    }
+    else if (domain == cnameTarget) {
+      setLWResult(res, 0, true, false, true);
+      addRecordToLW(res, domain, QType::A, "192.0.2.42");
+      addRRSIG(keys, res->d_records, dnameTarget, 300);
+      return LWResult::Result::Success;
+    }
+    return LWResult::Result::Timeout;
+  });
+
+  vector<DNSRecord> ret;
+  int res = sr->beginResolve(target, QType(QType::A), QClass::IN, ret);
+
+  BOOST_CHECK_EQUAL(res, RCode::NoError);
+  BOOST_CHECK_EQUAL(sr->getValidationState(), vState::Secure);
+  BOOST_REQUIRE_EQUAL(ret.size(), 5U); /* DNAME + RRSIG(DNAME) + CNAME + A + RRSIG(A) */
+
+  BOOST_CHECK_EQUAL(queries, 4U);
+
+  BOOST_REQUIRE(ret[0].d_type == QType::DNAME);
+  BOOST_CHECK(ret[0].d_name == dnameOwner);
+  BOOST_CHECK_EQUAL(getRR<DNAMERecordContent>(ret[0])->getTarget(), dnameTarget);
+
+  BOOST_REQUIRE(ret[1].d_type == QType::RRSIG);
+  BOOST_CHECK_EQUAL(ret[1].d_name, dnameOwner);
+
+  BOOST_CHECK(ret[2].d_type == QType::CNAME);
+  BOOST_CHECK_EQUAL(ret[2].d_name, target);
+
+  BOOST_CHECK(ret[3].d_type == QType::A);
+  BOOST_CHECK_EQUAL(ret[3].d_name, cnameTarget);
+
+  BOOST_CHECK(ret[4].d_type == QType::RRSIG);
+  BOOST_CHECK_EQUAL(ret[4].d_name, cnameTarget);
+
+  // And the cache
+  ret.clear();
+  res = sr->beginResolve(target, QType(QType::A), QClass::IN, ret);
+
+  BOOST_CHECK_EQUAL(res, RCode::NoError);
+  BOOST_CHECK_EQUAL(sr->getValidationState(), vState::Secure);
+  BOOST_REQUIRE_EQUAL(ret.size(), 5U); /* DNAME + RRSIG(DNAME) + CNAME + A + RRSIG(A) */
+
+  BOOST_CHECK_EQUAL(queries, 4U);
 
   BOOST_REQUIRE(ret[0].d_type == QType::DNAME);
   BOOST_CHECK(ret[0].d_name == dnameOwner);
@@ -2173,4 +2362,99 @@ BOOST_AUTO_TEST_CASE(test_dname_processing_no_CNAME)
 - check preoutquery
 
 */
+
+BOOST_AUTO_TEST_CASE(test_glued_referral_child_ns_set_wrong)
+{
+  std::unique_ptr<SyncRes> sr;
+  initSR(sr);
+
+  primeHints();
+
+  const DNSName target("powerdns.com.");
+
+  sr->setAsyncCallback([target](const ComboAddress& ip, const DNSName& domain, int type, bool doTCP, bool sendRDQuery, int EDNS0Level, struct timeval* now, boost::optional<Netmask>& srcmask, boost::optional<const ResolveContext&> context, LWResult* res, bool* chained) {
+    /* this will cause issue with qname minimization if we ever implement it */
+    if (domain != target) {
+      return LWResult::Result::Timeout;
+    }
+
+    if (isRootServer(ip)) {
+      setLWResult(res, 0, false, false, true);
+      addRecordToLW(res, "com.", QType::NS, "a.gtld-servers.net.", DNSResourceRecord::AUTHORITY, 172800);
+      addRecordToLW(res, "a.gtld-servers.net.", QType::A, "192.0.2.1", DNSResourceRecord::ADDITIONAL, 3600);
+      addRecordToLW(res, "a.gtld-servers.net.", QType::AAAA, "2001:DB8::1", DNSResourceRecord::ADDITIONAL, 3600);
+      return LWResult::Result::Success;
+    }
+    else if (ip == ComboAddress("192.0.2.1:53") || ip == ComboAddress("[2001:DB8::1]:53")) {
+      setLWResult(res, 0, false, false, true);
+      addRecordToLW(res, "powerdns.com.", QType::NS, "pdns-public-ns1.powerdns.com.", DNSResourceRecord::AUTHORITY, 172800);
+      addRecordToLW(res, "powerdns.com.", QType::NS, "pdns-public-ns2.powerdns.com.", DNSResourceRecord::AUTHORITY, 172800);
+      addRecordToLW(res, "pdns-public-ns1.powerdns.com.", QType::A, "192.0.2.2", DNSResourceRecord::ADDITIONAL, 172800);
+      addRecordToLW(res, "pdns-public-ns1.powerdns.com.", QType::AAAA, "2001:DB8::2", DNSResourceRecord::ADDITIONAL, 172800);
+      addRecordToLW(res, "pdns-public-ns2.powerdns.com.", QType::A, "192.0.2.3", DNSResourceRecord::ADDITIONAL, 172800);
+      addRecordToLW(res, "pdns-public-ns2.powerdns.com.", QType::AAAA, "2001:DB8::3", DNSResourceRecord::ADDITIONAL, 172800);
+      return LWResult::Result::Success;
+    }
+    else if (ip == ComboAddress("192.0.2.2:53") || ip == ComboAddress("192.0.2.3:53") || ip == ComboAddress("[2001:DB8::2]:53") || ip == ComboAddress("[2001:DB8::3]:53")) {
+
+      if (type == QType::A) {
+        setLWResult(res, 0, true, false, true);
+        addRecordToLW(res, target, QType::A, "192.0.2.4");
+        return LWResult::Result::Success;
+      }
+      else if (type == QType::NS) {
+        setLWResult(res, 0, true, false, true);
+        addRecordToLW(res, "powerdns.com.", QType::NS, "pdns-public-nsX1.powerdns.com.", DNSResourceRecord::ANSWER, 172800);
+        addRecordToLW(res, "powerdns.com.", QType::NS, "pdns-public-nsX2.powerdns.com.", DNSResourceRecord::ANSWER, 172800);
+        addRecordToLW(res, "pdns-public-nsX1.powerdns.com.", QType::A, "192.0.2.11", DNSResourceRecord::ADDITIONAL, 172800);
+        addRecordToLW(res, "pdns-public-nsX1.powerdns.com.", QType::AAAA, "2001:DB8::11", DNSResourceRecord::ADDITIONAL, 172800);
+        addRecordToLW(res, "pdns-public-nsX2.powerdns.com.", QType::A, "192.0.2.12", DNSResourceRecord::ADDITIONAL, 172800);
+        addRecordToLW(res, "pdns-public-nsX2.powerdns.com.", QType::AAAA, "2001:DB8::12", DNSResourceRecord::ADDITIONAL, 172800);
+        return LWResult::Result::Success;
+      }
+      else {
+        return LWResult::Result::Timeout;
+      }
+    }
+    else {
+      return LWResult::Result::Timeout;
+    }
+  });
+
+  vector<DNSRecord> ret;
+  int res = sr->beginResolve(target, QType(QType::A), QClass::IN, ret);
+  BOOST_CHECK_EQUAL(res, RCode::NoError);
+  BOOST_REQUIRE_EQUAL(ret.size(), 1U);
+  BOOST_CHECK(ret[0].d_type == QType::A);
+  BOOST_CHECK_EQUAL(ret[0].d_name, target);
+
+  // Now resolve NS to get auth NS set in cache and save the parent NS set
+  ret.clear();
+  res = sr->beginResolve(target, QType(QType::NS), QClass::IN, ret);
+  BOOST_CHECK_EQUAL(res, RCode::NoError);
+  BOOST_REQUIRE_EQUAL(ret.size(), 2U);
+  BOOST_CHECK(ret[0].d_type == QType::NS);
+  BOOST_CHECK_EQUAL(ret[0].d_name, target);
+  BOOST_CHECK_EQUAL(SyncRes::getSaveParentsNSSetsSize(), 1U);
+
+  g_recCache->doWipeCache(target, false, QType::A);
+  SyncRes::s_save_parent_ns_set = false;
+
+  // Try to resolve now via the broken child NS set... should not work
+  ret.clear();
+  res = sr->beginResolve(target, QType(QType::A), QClass::IN, ret);
+  BOOST_CHECK_EQUAL(res, RCode::ServFail);
+  BOOST_REQUIRE_EQUAL(ret.size(), 0U);
+
+  SyncRes::s_save_parent_ns_set = true;
+
+  // Try to resolve now via the broken child... should work now via fallback to parent NS set
+  ret.clear();
+  res = sr->beginResolve(target, QType(QType::A), QClass::IN, ret);
+  BOOST_CHECK_EQUAL(res, RCode::NoError);
+  BOOST_REQUIRE_EQUAL(ret.size(), 1U);
+  BOOST_CHECK(ret[0].d_type == QType::A);
+  BOOST_CHECK_EQUAL(ret[0].d_name, target);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

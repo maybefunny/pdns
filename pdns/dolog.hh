@@ -20,8 +20,11 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 #pragma once
+#include <fstream>
 #include <iostream>
+#include <optional>
 #include <sstream>
+#include "config.h"
 #if !defined(RECURSOR)
 #include <syslog.h>
 #else
@@ -75,6 +78,10 @@ void dolog(std::ostream& os, const char* s, T value, Args... args)
 
 extern bool g_verbose;
 extern bool g_syslog;
+#ifdef DNSDIST
+extern bool g_logtimestamps;
+extern std::optional<std::ofstream> g_verboseStream;
+#endif
 
 inline void setSyslogFacility(int facility)
 {
@@ -84,36 +91,68 @@ inline void setSyslogFacility(int facility)
 }
 
 template<typename... Args>
-void genlog(int level, const char* s, Args... args)
+void genlog(std::ostream& stream, int level, bool doSyslog, const char* s, Args... args)
 {
   std::ostringstream str;
   dolog(str, s, args...);
-  if(g_syslog)
-    syslog(level, "%s", str.str().c_str());
-  std::cout<<str.str()<<std::endl;
+
+  auto output = str.str();
+
+  if (doSyslog) {
+    syslog(level, "%s", output.c_str());
+  }
+
+#ifdef DNSDIST
+  if (g_logtimestamps) {
+    char buffer[50] = "";
+    struct tm tm;
+    time_t t;
+    time(&t);
+    localtime_r(&t, &tm);
+    if (strftime(buffer, sizeof(buffer), "%b %d %H:%M:%S ", &tm) == 0) {
+      buffer[0] = '\0';
+    }
+    stream<<buffer;
+  }
+#endif
+
+  stream<<output<<std::endl;
 }
 
+template<typename... Args>
+void verboselog(const char* s, Args... args)
+{
+#ifdef DNSDIST
+  if (g_verboseStream) {
+    genlog(*g_verboseStream, LOG_DEBUG, false, s, args...);
+  }
+  else {
+#endif /* DNSDIST */
+    genlog(std::cout, LOG_DEBUG, g_syslog, s, args...);
+#ifdef DNSDIST
+  }
+#endif /* DNSDIST */
+}
 
-#define vinfolog if(g_verbose)infolog
+#define vinfolog if (g_verbose) verboselog
 
 template<typename... Args>
 void infolog(const char* s, Args... args)
 {
-  genlog(LOG_INFO, s, args...);
+  genlog(std::cout, LOG_INFO, g_syslog, s, args...);
 }
 
 template<typename... Args>
 void warnlog(const char* s, Args... args)
 {
-  genlog(LOG_WARNING, s, args...);
+  genlog(std::cout, LOG_WARNING, g_syslog, s, args...);
 }
 
 template<typename... Args>
 void errlog(const char* s, Args... args)
 {
-  genlog(LOG_ERR, s, args...);
+  genlog(std::cout, LOG_ERR, g_syslog, s, args...);
 }
-
 
 #else // RECURSOR
 

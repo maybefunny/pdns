@@ -42,6 +42,7 @@ To use this, DNSSEC processing or validation must be enabled by setting `dnssec`
 
 Netmasks (both IPv4 and IPv6) that are allowed to use the server.
 The default allows access only from :rfc:`1918` private IP addresses.
+An empty value means no checking is done, all clients are allowed.
 Due to the aggressive nature of the internet these days, it is highly recommended to not open up the recursor for the entire internet.
 Questions from IP addresses not listed here are ignored and do not get an answer.
 
@@ -57,6 +58,71 @@ Note that specifying an IP address without a netmask uses an implicit netmask of
 
 Like `allow-from`_, except reading from file.
 Overrides the `allow-from`_ setting. To use this feature, supply one netmask per line, with optional comments preceded by a "#".
+
+.. _setting-allow-notify-for:
+
+``allow-notify-for``
+---------------------
+.. versionadded:: 4.6.0
+
+-  Comma separated list of domain-names
+-  Default: (empty)
+
+Domain names specified in this list are used to permit incoming
+NOTIFY operations to wipe any cache entries that match the domain
+name. If this list is empty, all NOTIFY operations will be ignored.
+
+.. _setting-allow-notify-for-file:
+
+``allow-notify-for-file``
+-------------------------
+.. versionadded:: 4.6.0
+
+-  Path
+
+Like `allow-notify-for`_, except reading from file. To use this
+feature, supply one domain name per line, with optional comments
+preceded by a "#".
+
+NOTIFY-allowed zones can also be specified using `forward-zones-file`_.
+
+.. _setting-allow-notify-from:
+
+``allow-notify-from``
+---------------------
+.. versionadded:: 4.6.0
+
+-  IP addresses or netmasks, separated by commas
+-  Default: unset
+
+Netmasks (both IPv4 and IPv6) that are allowed to issue NOTIFY operations
+to the server.  NOTIFY operations from IP addresses not listed here are
+ignored and do not get an answer.
+
+When the Proxy Protocol is enabled (see `proxy-protocol-from`_), the
+recursor will check the address of the client IP advertised in the
+Proxy Protocol header instead of the one of the proxy.
+
+Note that specifying an IP address without a netmask uses an implicit
+netmask of /32 or /128.
+
+NOTIFY operations received from a client listed in one of these netmasks
+will be accepted and used to wipe any cache entries whose zones match
+the zone specified in the NOTIFY operation, but only if that zone (or
+one of its parents) is included in `allow-notify-for`_,
+`allow-notify-for-file`_, or `forward-zones-file`_ with a '^' prefix.
+
+.. _setting-allow-notify-from-file:
+
+``allow-notify-from-file``
+--------------------------
+.. versionadded:: 4.6.0
+
+-  Path
+
+Like `allow-notify-from`_, except reading from file. To use this
+feature, supply one netmask per line, with optional comments preceded
+by a "#".
 
 .. _setting-any-to-tcp:
 
@@ -89,17 +155,20 @@ Allow ``trustanchor.server CH TXT`` and ``negativetrustanchor.server CH TXT`` qu
 -  Default: unset
 
 Directory where the REST API stores its configuration and zones.
+For configuration updates to work, :ref:`setting-include-dir` should have the same value.
 
 .. _setting-api-key:
 
 ``api-key``
 -----------
 .. versionadded:: 4.0.0
+.. versionchanged:: 4.6.0
+  This setting now accepts a hashed and salted version.
 
 -  String
 -  Default: unset
 
-Static pre-shared authentication key for access to the REST API.
+Static pre-shared authentication key for access to the REST API. Since 4.6.0 the key can be hashed and salted using ``rec_control hash-password`` instead of being stored in the configuration in plaintext, but the plaintext version is still supported.
 
 .. _setting-api-readonly:
 
@@ -124,19 +193,6 @@ Disallow data modification through the REST API when set.
 -  Default: unset
 
 Location of the server logfile (used by the REST API).
-
-.. _setting-auth-can-lower-ttl:
-
-``auth-can-lower-ttl``
-----------------------
--  Boolean
--  Default: no
-
-Authoritative zones can transmit a TTL value that is lower than that specified in the parent zone.
-This is called a 'delegation inconsistency'.
-To follow :rfc:`RFC 2181 section 5.2<2181#section-5.2>` and :rfc:`5.4 <2181#section-5.4>` to the letter, enable this feature.
-This will mean a slight deterioration of performance, and it will not solve any problems, but does make the recursor more standards compliant.
-Not recommended unless you have to tick an 'RFC 2181 compliant' box.
 
 .. _setting-auth-zones:
 
@@ -208,7 +264,8 @@ See :doc:`metrics`.
 -  Path to a Directory
 
 If set, chroot to this directory for more security.
-See :doc:`security`
+This is not recommended; instead, we recommend containing PowerDNS using operating system features.
+We ship systemd unit files with our packages to make this easy.
 
 Make sure that ``/dev/log`` is available from within the chroot.
 Logging will silently fail over time otherwise (on logrotate).
@@ -251,26 +308,25 @@ When running multiple recursors on the same server, read settings from :file:`re
 
 ``cpu-map``
 -----------
-.. versionadded:: 4.1.0
 
 - String
 - Default: unset
 
-Set CPU affinity for worker threads, asking the scheduler to run those threads on a single CPU, or a set of CPUs.
+Set CPU affinity for threads, asking the scheduler to run those threads on a single CPU, or a set of CPUs.
 This parameter accepts a space separated list of thread-id=cpu-id, or thread-id=cpu-id-1,cpu-id-2,...,cpu-id-N.
 For example, to make the worker thread 0 run on CPU id 0 and the worker thread 1 on CPUs 1 and 2::
 
   cpu-map=0=0 1=1,2
 
-The number of worker threads is determined by the :ref:`setting-threads` setting.
-If :ref:`setting-pdns-distributes-queries` is set, an additional thread is started, assigned the id 0,
-and is the only one listening on client sockets and accepting queries, distributing them to the other worker threads afterwards.
+The thread handling the control channel, the webserver and other internal stuff has been assigned id 0, the distributor
+threads if any are assigned id 1 and counting, and the worker threads follow behind.
+The number of distributor threads is determined by :ref:`setting-distributor-threads`, the number of worker threads is determined by the :ref:`setting-threads` setting.
 
-Starting with version 4.2.0, the thread handling the control channel, the webserver and other internal stuff has been assigned
-id 0 and more than one distributor thread can be started using the :ref:`setting-distributor-threads` setting, so the distributor
-threads if any are assigned id 1 and counting, and the other threads follow behind.
+This parameter is only available if the OS provides the ``pthread_setaffinity_np()`` function.
 
-This parameter is only available on OS that provides the `pthread_setaffinity_np()` function.
+Note that depending on the configuration the Recursor can start more threads.
+Typically these threads will sleep most of the time.
+These threads cannot be specified in this setting as their thread-ids are left unspecified.
 
 .. _setting-daemon:
 
@@ -386,7 +442,7 @@ If `pdns-distributes-queries`_ is set, spawn this number of distributor threads 
 handle incoming queries and distribute them to other threads based on a hash of the query, to maximize the cache hit
 ratio.
 
-.. _settings-dot-to-auth-names:
+.. _setting-dot-to-auth-names:
 
 ``dot-to-auth-names``
 ---------------------
@@ -398,7 +454,7 @@ ratio.
 Force DoT to the listed authoritative nameservers. For this to work, DoT support has to be compiled in.
 Currently, the certificate is not checked for validity in any way.
 
-.. _settings-dot-to-port-853:
+.. _setting-dot-to-port-853:
 
 ``dot-to-port-853``
 -------------------
@@ -704,6 +760,18 @@ Change to ``/dev/random`` if PowerDNS should block waiting for enough entropy to
 The path to the /etc/hosts file, or equivalent.
 This file can be used to serve data authoritatively using `export-etc-hosts`_.
 
+.. _setting-event-trace-enabled:
+
+``event-trace-enabled``
+-----------------------
+.. versionadded:: 4.6.0
+
+- Integer
+- Default: 0
+
+Enable the recording and logging of ref:`event traces`. This is an experimental feature subject to change.
+Possible values are 0: (disabled), 1 (add information to protobuf logging messages) and 2 (write to log) and 3 (both).
+
 .. _setting-export-etc-hosts:
 
 ``export-etc-hosts``
@@ -752,7 +820,9 @@ Multiple IP addresses can be specified and port numbers other than 53 can be con
 
     forward-zones=example.org=203.0.113.210:5300;127.0.0.1, powerdns.com=127.0.0.1;198.51.100.10:530;[2001:DB8::1:3]:5300
 
-Forwarded queries have the 'recursion desired' bit set to 0, meaning that this setting is intended to forward queries to authoritative servers.
+Forwarded queries have the ``recursion desired (RD)`` bit set to ``0``, meaning that this setting is intended to forward queries to authoritative servers.
+If an ``NS`` record set for a subzone of the forwarded zone is learned, that record set will be used to determine addresses for name servers of the subzone.
+This allows e.g. a forward to a local authoritative server holding a copy of the root zone, delegations received from that server will work.
 
 **IMPORTANT**: When using DNSSEC validation (which is default), forwards to non-delegated (e.g. internal) zones that have a DNSSEC signed parent zone will validate as Bogus.
 To prevent this, add a Negative Trust Anchor (NTA) for this zone in the `lua-config-file`_ with ``addNTA("your.zone", "A comment")``.
@@ -771,8 +841,9 @@ Same as `forward-zones`_, parsed from a file. Only 1 zone is allowed per line, s
 
     example.org=203.0.113.210, 192.0.2.4:5300
 
-Zones prefixed with a '+' are forwarded with the recursion-desired bit set, for which see `forward-zones-recurse`_.
-Default behaviour without '+' is as with `forward-zones`_.
+Zones prefixed with a '+' are treated as with
+`forward-zones-recurse`_.  Default behaviour without '+' is as with
+`forward-zones`_.
 
 .. versionchanged:: 4.0.0
 
@@ -780,15 +851,22 @@ Default behaviour without '+' is as with `forward-zones`_.
 
 The DNSSEC notes from `forward-zones`_ apply here as well.
 
+.. versionchanged:: 4.6.0
+
+Zones prefixed with a '^' are added to the `allow-notify-for`_
+list. Both prefix characters can be used if desired, in any order.
+
 .. _setting-forward-zones-recurse:
 
 ``forward-zones-recurse``
 -------------------------
 -  'zonename=IP' pairs, comma separated
 
-Like regular `forward-zones`_, but forwarded queries have the 'recursion desired' bit set to 1, meaning that this setting is intended to forward queries to other recursive servers.
+Like regular `forward-zones`_, but forwarded queries have the ``recursion desired (RD)`` bit set to ``1``, meaning that this setting is intended to forward queries to other recursive servers.
+In contrast to regular forwarding, the rule that delegations of the forwarded subzones are respected is not active.
+This is because we rely on the forwarder to resolve the query fully.
 
-The DNSSEC notes from `forward-zones`_ apply here as well.
+See `forward-zones`_ for additional options (such as supplying multiple recursive servers) and an important note about DNSSEC.
 
 .. _setting-gettag-needs-edns-options:
 
@@ -806,8 +884,17 @@ If set, EDNS options in incoming queries are extracted and passed to the :func:`
 ``hint-file``
 -------------
 -  Path
+-  Default: empty
 
-If set, the root-hints are read from this file. If unset, default root hints are used.
+.. versionchanged:: 4.6.2
+
+  Introduced the value ``no`` to disable root-hints processing.
+
+If set, the root-hints are read from this file. If empty, the default built-in root hints are used.
+
+In some special cases, processing the root hints is not needed, for example when forwarding all queries to another recursor.
+For these special cases, it is possible to disable the processing of root hints by setting the value to ``no``.
+See :ref:`handling-of-root-hints` for more information on root hints handling.
 
 .. _setting-ignore-unknown-settings:
 
@@ -906,9 +993,10 @@ This feature is intended to facilitate ip-failover setups, but it may also mask 
 -  Integer between 0 and 9
 -  Default: 6
 
-Amount of logging.
-Higher is more, more logging may destroy performance.
-It is recommended not to set this below 3.
+Amount of logging. The higher the number, the more lines logged.
+Corresponds to "syslog" level values (e.g. 0 = emergency, 1 = alert, 2 = critical, 3 = error, 4 = warning, 5 = notice, 6 = info, 7 = debug).
+Each level includes itself plus the lower levels before it.
+Not recommended to set this below 3.
 
 .. _setting-log-common-errors:
 
@@ -981,6 +1069,31 @@ Path to a lua file to manipulate the Recursor's answers. See :doc:`lua-scripting
 The interval between calls to the Lua user defined `maintenance()` function in seconds.
 See :ref:`hooks-maintenance-callback`
 
+.. _setting-max-busy-dot-probes:
+
+``max-busy-dot-probes``
+-----------------------
+.. versionadded:: 4.7.0
+
+- Integer
+- Default: 0
+
+Limit the maximum number of simultaneous DoT probes the Recursor will schedule.
+The default value 0 means no DoT probes are scheduled.
+
+DoT probes are used to check if an authoritative server's IP address supports DoT.
+If the probe determines an IP address supports DoT, the Recursor will use DoT to contact it for subsequent queries until a failure occurs.
+After a failure, the Recursor will stop using DoT for that specific IP address for a while.
+The results of probes are remembered and can be viewed by the ``rec_control dump-dot-probe-map`` command.
+If the maximum number of pending probes is reached, no probes will be scheduled, even if no DoT status is known for an address.
+If the result of a probe is not yet available, the Recursor will contact the authoritative server in the regular way, unless an authoritative server is configured to be contacted over DoT always using :ref:`setting-dot-to-auth-names`.
+In that case no probe will be scheduled.
+
+
+Note::
+  DoT probing is an experimental feature.
+  Please test thoroughly to determine if it is suitable in your specific production environment before enabling.
+
 .. _setting-max-cache-bogus-ttl:
 
 ``max-cache-bogus-ttl``
@@ -1011,6 +1124,8 @@ The size of the negative cache is 10% of this number.
 -  Default: 86400
 
 Maximum number of seconds to cache an item in the DNS cache, no matter what the original TTL specified.
+This value also controls the refresh period of cached root data.
+See :ref:`handling-of-root-hints` for more information on this.
 
 .. versionchanged:: 4.1.0
 
@@ -1029,6 +1144,19 @@ Maximum number of seconds to cache an item in the DNS cache, no matter what the 
 Maximum number of incoming requests handled concurrently per tcp
 connection. This number must be larger than 0 and smaller than 65536
 and also smaller than `max-mthreads`.
+
+.. _setting-max-include-depth:
+
+``max-include-depth``
+----------------------
+
+.. versionadded:: 4.6.0
+
+-  Integer
+-  Default: 20
+
+Maximum number of nested ``$INCLUDE`` directives while processing a zone file.
+Zero mean no ``$INCLUDE`` directives will be accepted.
 
 .. _setting-max-generate-steps:
 
@@ -1411,7 +1539,8 @@ Maximum number of seconds to cache an item in the packet cache, no matter what t
 -  Integer
 -  Default: 60
 
-Maximum number of seconds to cache a 'server failure' answer in the packet cache.
+Maximum number of seconds to cache an answer indicating a failure to resolve in the packet cache.
+Before version 4.6.0 only ``ServFail`` answers were considered as such. Starting with 4.6.0, all responses with a code other than ``NoError`` and ``NXDomain``, or without records in the answer and authority sections, are considered as a failure to resolve.
 
 .. versionchanged:: 4.0.0
 
@@ -1454,6 +1583,8 @@ Ranges that are required to send a Proxy Protocol version 2 header in front of U
 Queries that are not prefixed with such a header will not be accepted from clients in these ranges. Queries prefixed by headers from clients that are not listed in these ranges will be dropped.
 
 Note that once a Proxy Protocol header has been received, the source address from the proxy header instead of the address of the proxy will be checked against the `allow-from`_ ACL.
+
+The dnsdist docs have `more information about the PROXY protocol <https://dnsdist.org/advanced/passing-source-address.html#proxy-protocol>`_.
 
 .. _setting-proxy-protocol-maximum-size:
 
@@ -1601,6 +1732,18 @@ The effect of this is far fewer queries to the root-servers.
 .. versionchanged:: 4.0.0
 
     Default is 'yes' now, was 'no' before 4.0.0
+
+.. _setting-save-parent-ns-set:
+
+``save-parent-ns-set``
+----------------------
+.. versionadded:: 4.7.0
+
+- Boolean
+- Default: yes
+
+If set, a parent (non-authoritative) ``NS`` set is saved if it contains more entries than a newly encountered child (authoritative) ``NS`` set for the same domain.
+The saved parent ``NS`` set is tried if resolution using the child ``NS`` set fails.
 
 .. _setting-security-poll-suffix:
 
@@ -1862,6 +2005,33 @@ Can be read out using ``rec_control top-remotes``.
 
 A list of comma-separated statistic names, that are prevented from being exported via SNMP, for performance reasons.
 
+.. _setting-structured-logging:
+
+``structured-logging``
+----------------------
+.. versionadded:: 4.6.0
+
+- Boolean
+- Default: yes
+
+Prefer structured logging when both an old style and a structured log messages is available.
+
+.. _setting-structured-logging-backend:
+
+``structured-logging-backend``
+------------------------------
+.. versionadded:: 4.8.0
+
+- String
+- Default: "default"
+
+The backend used for structured logging output.
+Available backends are:
+
+- ``default``: use the traditional logging system to output structured logging information.
+- ``systemd-journal``: use systemd-journal.
+  When using this backend, provide ``-o verbose`` or simular output option to ``journalctl`` to view the full information.
+
 .. _setting-tcp-fast-open:
 
 ``tcp-fast-open``
@@ -1884,6 +2054,51 @@ The numerical value supplied is used as the queue size, 0 meaning disabled. See 
 -  Default: no (disabled)
 
 Enable TCP Fast Open Connect support, if available, on the outgoing connections to authoritative servers. See :ref:`tcp-fast-open-support`.
+
+.. _setting-tcp-out-max-idle-ms:
+
+``tcp-out-max-idle-ms``
+-----------------------
+.. versionadded:: 4.6.0
+
+-  Integer
+-  Default : 10000
+
+Time outgoing TCP/DoT connections are left idle in milliseconds or 0 if no limit. After having been idle for this time, the connection is eligible for closing.
+
+.. _setting-tcp-out-max-idle-per-auth:
+
+``tcp-out-max-idle-per-auth``
+-----------------------------
+.. versionadded:: 4.6.0
+
+-  Integer
+-  Default : 10
+
+Maximum number of idle outgoing TCP/DoT connections to a specific IP per thread, 0 means do not keep idle connections open.
+
+.. _setting-tcp-out-max-queries:
+
+``tcp-out-max-queries``
+-----------------------
+-  Integer
+-  Default : 0
+
+Maximum total number of queries per outgoing TCP/DoT connection, 0 means no limit. After this number of queries, the connection is
+closed and a new one will be created if needed.
+
+.. versionadded:: 4.6.0
+
+.. _setting-tcp-out-max-idle-per-thread:
+
+``tcp-out-max-idle-per-thread``
+-------------------------------
+.. versionadded:: 4.6.0
+
+-  Integer
+-  Default : 100
+
+Maximum number of idle outgoing TCP/DoT connections per thread, 0 means do not keep idle connections open.
 
 .. _setting-threads:
 
@@ -2108,6 +2323,18 @@ These IPs and subnets are allowed to access the webserver. Note that
 specifying an IP address without a netmask uses an implicit netmask
 of /32 or /128.
 
+.. _setting-webserver-hash-plaintext-credentials:
+
+``webserver-hash-plaintext-credentials``
+----------------------------------------
+.. versionadded:: 4.6.0
+
+-  Boolean
+-  Default: no
+
+Whether passwords and API keys supplied in the configuration as plaintext should be hashed during startup, to prevent the plaintext versions from staying in memory. Doing so increases significantly the cost of verifying credentials and is thus disabled by default.
+Note that this option only applies to credentials stored in the configuration as plaintext, but hashed credentials are supported without enabling this option.
+
 .. _setting-webserver-loglevel:
 
 ``webserver-loglevel``
@@ -2153,10 +2380,13 @@ The value between the hooks is a UUID that is generated for each request. This c
 
 ``webserver-password``
 ----------------------
+.. versionchanged:: 4.6.0
+  This setting now accepts a hashed and salted version.
+
 -  String
 -  Default: unset
 
-Password required to access the webserver.
+Password required to access the webserver. Since 4.6.0 the password can be hashed and salted using ``rec_control hash-password`` instead of being present in the configuration in plaintext, but the plaintext version is still supported.
 
 .. _setting-webserver-port:
 
@@ -2187,6 +2417,7 @@ If a PID file should be written to `socket-dir`_
 
 .. note::
   This is an experimental implementation of `draft-bellis-dnsop-xpf <https://datatracker.ietf.org/doc/draft-bellis-dnsop-xpf/>`_.
+  This is a deprecated feature that will be removed in the near future.
 
 The server will trust XPF records found in queries sent from those netmasks (both IPv4 and IPv6),
 and will adjust queries' source and destination accordingly. This is especially useful when the recursor
@@ -2205,6 +2436,7 @@ should be done on the proxy.
 
 .. note::
   This is an experimental implementation of `draft-bellis-dnsop-xpf <https://datatracker.ietf.org/doc/draft-bellis-dnsop-xpf/>`_.
+  This is a deprecated feature that will be removed in the near future.
 
 This option sets the resource record code to use for XPF records, as long as an official code has not been assigned to it.
 0 means that XPF is disabled.

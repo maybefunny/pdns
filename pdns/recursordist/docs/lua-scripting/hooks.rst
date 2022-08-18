@@ -10,7 +10,7 @@ Queries can be intercepted in many places:
 -  before any filtering policy have been applied (:func:`prerpz`)
 -  before the resolving logic starts to work (:func:`preresolve`)
 -  after the resolving process failed to find a correct answer for a domain (:func:`nodata`, :func:`nxdomain`)
--  after the whole process is done and an answer is ready for the client (:func:`postresolve`)
+-  after the whole process is done and an answer is ready for the client (:func:`postresolve` and its FFI counterpart, :func:`postresolve_ffi`).
 -  before an outgoing query is made to an authoritative server (:func:`preoutquery`)
 -  after a filtering policy hit has occurred (:func:`policyEventFilter`)
 
@@ -151,6 +151,14 @@ Interception Functions
 
   :param DNSQuestion dq: The DNS question to handle
 
+.. function:: postresolve_ffi(handle) -> bool
+
+  .. versionadded:: 4.7.0
+
+  This is the FFI counterpart of :func:`postresolve`.
+  It accepts a single parameter which can be passed to the functions listed in :doc:`ffi`.
+  The accessor functions retrieve and modify various aspects of the answer returned to the client.
+
 .. function:: nxdomain(dq) -> bool
 
   is called after the DNS resolution process has run its course, but ended in an 'NXDOMAIN' situation, indicating that the domain does not exist.
@@ -176,11 +184,13 @@ Interception Functions
 
 .. function:: policyEventFilter(event) -> bool
 
-    .. versionadded:: 4.4.0
+  .. versionadded:: 4.4.0
 
   This hook is called when a filtering policy has been hit, before the decision has been applied, making it possible to change a policy decision by altering its content or to skip it entirely.
   Using the :meth:`event:discardPolicy() <PolicyEvent:discardPolicy>` function, it is also possible to selectively disable one or more filtering policy, for example RPZ zones.
   The return value indicates whether the policy hit should be completely ignored (true) or applied (false), possibly after editing the action to take in that latter case (see :ref:`modifyingpolicydecisions` below). when true is returned, the resolution process will resume as if the policy hit never took place.
+
+  :param PolicyEvent event: The event to handle
 
   As an example, to ignore the result of a policy hit for the example.com domain:
 
@@ -209,19 +219,19 @@ Interception Functions
         return false
       end
 
-  :param :class:`PolicyEvent` event: The event to handle
+.. _hook-semantics:
 
-Semantics
-^^^^^^^^^
-The `ipfilter` and `preresolve` must return ``true`` if they have taken over the query and wish that the nameserver should not proceed with its regular query-processing.
+Callback Semantics
+^^^^^^^^^^^^^^^^^^
+The :func:`ipfilter` and :func:`preresolve` callbacks must return ``true`` if they have taken over the query and wish that the nameserver should not proceed with processing.
 When a function returns ``false``, the nameserver will process the query normally until a new function is called.
 
 If a function has taken over a request, it should set an rcode (usually 0), and specify a table with records to be put in the answer section of a packet.
-An interesting rcode is NXDOMAIN (3, or ``pdns.NXDOMAIN``), which specifies the non-existence of a domain.
+An interesting rcode is `NXDOMAIN` (3, or ``pdns.NXDOMAIN``), which specifies the non-existence of a domain.
 
 The :func:`ipfilter` and :func:`preoutquery` hooks are different, in that :func:`ipfilter` can only return a true of false value, and that :func:`preoutquery` can also set rcode -3 to signify that the whole query should be terminated.
 
-The func:`policyEventFilter` has a different meaning as well, where returning true means that the policy hit should be ignored and normal processing should be resumed.
+The :func:`policyEventFilter` has a different meaning as well, where returning true means that the policy hit should be ignored and normal processing should be resumed.
 
 A minimal sample script:
 
@@ -241,8 +251,8 @@ A minimal sample script:
 **Warning**: Please do NOT use the above sample script in production!
 Responsible NXDomain redirection requires more attention to detail.
 
-Useful 'rcodes' include 0 for "no error" and ``pdns.NXDOMAIN`` for "NXDOMAIN". Before 4.4.0, ``pdns.DROP`` can also be used to drop the question without any further processing.
-Such a drop is accounted in the 'policy-drops' metric.
+Useful ``rcodes`` include 0 or ``pdns.NOERROR`` for no error and ``pdns.NXDOMAIN`` for ``NXDOMAIN``. Before 4.4.0, ``pdns.DROP`` can also be used to drop the question without any further processing.
+Such a drop is accounted in the ``policy-drops`` metric.
 
 Starting with recursor 4.4.0, the method to drop a request is to set the ``dq.appliedPolicy.policyKind`` to the value ``pdns.policykinds.Drop``.
 
@@ -257,7 +267,7 @@ Starting with recursor 4.4.0, the method to drop a request is to set the ``dq.ap
         return false
     end
 
-**Note**: to drop a query from ``preresolve``, set ``policyKind`` and return false, to indicate the Recursor should process the Drop action.
+**Note**: to drop a query set ``policyKind`` and return ``false``, to indicate the Recursor should process the ``Drop`` action.
 
 DNS64
 -----

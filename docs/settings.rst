@@ -106,6 +106,10 @@ When notifying a zone, also notify these nameservers. Example:
 ``also-notify`` always receive a notification. Even if they do not match
 the list in :ref:`setting-only-notify`.
 
+You may specify an alternate port by appending :port. Example:
+``also-notify=192.0.2.1:5300``. If no port is specified, port 53
+is used.
+
 .. _setting-any-to-tcp:
 
 ``any-to-tcp``
@@ -134,7 +138,10 @@ Enable/disable the :doc:`http-api/index`.
 
 -  String
 
-Static pre-shared authentication key for access to the REST API.
+.. versionchanged:: 4.6.0
+  This setting now accepts a hashed and salted version.
+
+Static pre-shared authentication key for access to the REST API. Since 4.6.0 the key can be hashed and salted using ``pdnsutil hash-password`` instead of being stored in the configuration in plaintext, but the plaintext version is still supported.
 
 .. _setting-autosecondary:
 
@@ -250,6 +257,8 @@ You may specify an alternate port by appending :port, ex:
 -  Path
 
 If set, chroot to this directory for more security. See :doc:`security`.
+This is not recommended; instead, we recommend containing PowerDNS using operating system features.
+We ship systemd unit files with our packages to make this easy.
 
 Make sure that ``/dev/log`` is available from within the chroot. Logging
 will silently fail over time otherwise (on logrotate).
@@ -260,9 +269,9 @@ set in the configuration are relative to the new root.
 
 When running on a system where systemd manages services, ``chroot`` does
 not work out of the box, as PowerDNS cannot use the ``NOTIFY_SOCKET``.
-Either don't ``chroot`` on these systems or set the 'Type' of the this
+Either don't ``chroot`` on these systems or set the 'Type' of the
 service to 'simple' instead of 'notify' (refer to the systemd
-documentation on how to modify unit-files)
+documentation on how to modify unit-files).
 
 .. _setting-config-dir:
 
@@ -619,6 +628,21 @@ ADDITIONAL section when sending a referral.
 Seconds to cache zone metadata from the database. A value of 0
 disables caching.
 
+.. _setting-edns-cookie-secret:
+
+``edns-cookie-secret``
+--------------------------
+
+.. versionadded:: 4.6.0
+
+-  String
+-  Default: (empty)
+
+When set, PowerDNS will respond with :rfc:`9018` EDNS Cookies to queries that have the EDNS0 Cookie option.
+PowerDNS will also respond with BADCOOKIE to clients that have sent only a client cookie, or a bad server cookie (section 5.2.3 and 5.2.4 of :rfc:`7873`).
+
+This setting MUST be 32 hexadecimal characters, as the siphash algorithm's key used to create the cookie requires a 128-bit key.
+
 .. _setting-edns-subnet-processing:
 
 ``edns-subnet-processing``
@@ -897,8 +921,10 @@ Do not pass names like 'local0'!
 -  Integer
 -  Default: 4
 
-Amount of logging. Higher is more. Do not set below 3. Corresponds to "syslog" level values,
-e.g. error = 3, warning = 4, notice = 5, info = 6
+Amount of logging. The higher the number, the more lines logged.
+Corresponds to "syslog" level values (e.g. 0 = emergency, 1 = alert, 2 = critical, 3 = error, 4 = warning, 5 = notice, 6 = info, 7 = debug).
+Each level includes itself plus the lower levels before it.
+Not recommended to set this below 3.
 
 .. _setting-lua-axfr-script:
 
@@ -963,8 +989,8 @@ Setting this to any value less than or equal to 0 will set no limit.
 ``master``
 ----------
 
-+.. deprecated:: 4.5.0
-+  Renamed to :ref:`setting-primary`.
+.. deprecated:: 4.5.0
+  Renamed to :ref:`setting-primary`.
  
 -  Boolean
 -  Default: no
@@ -992,6 +1018,17 @@ will generally suffice for most installations.
 
 Maximum number of empty non-terminals to add to a zone. This is a
 protection measure to avoid database explosion due to long names.
+
+.. _setting-max-include-depth:
+
+``max-include-depth``
+----------------------
+
+-  Integer
+-  Default: 20
+
+Maximum number of nested ``$INCLUDE`` directives while processing a zone file.
+Zero mean no ``$INCLUDE`` directives will be accepted.
 
 .. _setting-max-generate-steps:
 
@@ -1252,6 +1289,34 @@ prevent-self-notification to "no".
 -  Default: no
 
 Turn on operating as a primary. See :ref:`primary-operation`.
+
+.. _setting-proxy-protocol-from:
+
+``proxy-protocol-from``
+-----------------------
+.. versionadded:: 4.6.0
+
+-  IP addresses or netmasks, separated by commas
+-  Default: empty
+
+Ranges that are required to send a Proxy Protocol version 2 header in front of UDP and TCP queries, to pass the original source and destination addresses and ports to the Authoritative.
+Queries that are not prefixed with such a header will not be accepted from clients in these ranges. Queries prefixed by headers from clients that are not listed in these ranges will be dropped.
+
+Note that once a Proxy Protocol header has been received, the source address from the proxy header instead of the address of the proxy will be checked against primary addresses sending NOTIFYs, and the ACLs for any client requesting AXFRs.
+When using this setting combined with :ref:`setting-trusted-notification-proxy`, please be aware that the trusted address will also be checked against the source address in the PROXY header.
+
+The dnsdist docs have `more information about the PROXY protocol <https://dnsdist.org/advanced/passing-source-address.html#proxy-protocol>`_.
+
+.. _setting-proxy-protocol-maximum-size:
+
+``proxy-protocol-maximum-size``
+-------------------------------
+.. versionadded:: 4.6.0
+
+-  Integer
+-  Default: 512
+
+The maximum size, in bytes, of a Proxy Protocol payload (header, addresses and ports, and TLV values). Queries with a larger payload will be dropped.
 
 .. _setting-query-cache-ttl:
 
@@ -1601,6 +1666,8 @@ Turn on supermaster support. See :ref:`supermaster-operation`.
 - Boolean
 - Default: no
 
+.. versionadded:: 4.5.0
+
 Whether or not to enable IPv4 and IPv6 :ref:`autohints <svc-autohints>`.
 
 .. _setting-tcp-control-address:
@@ -1724,6 +1791,11 @@ Disable after record contents have been upgraded.
 
 This option is supported by the bind and Generic SQL backends. 
 
+.. note::
+  When using a generic SQL backend, records with an unknown record type (see :doc:`../appendices/types`) can be identified with the following SQL query::
+  
+      SELECT * from records where type like 'TYPE%';
+
 .. _setting-version-string:
 
 ``version-string``
@@ -1770,6 +1842,18 @@ IP Address for webserver/API to listen on.
 -  Default: 127.0.0.1,::1
 
 Webserver/API access is only allowed from these subnets.
+
+.. _setting-webserver-hash-plaintext-credentials:
+
+``webserver-hash-plaintext-credentials``
+----------------------------------------
+.. versionadded:: 4.6.0
+
+-  Boolean
+-  Default: no
+
+Whether passwords and API keys supplied in the configuration as plaintext should be hashed during startup, to prevent the plaintext versions from staying in memory. Doing so increases significantly the cost of verifying credentials and is thus disabled by default.
+Note that this option only applies to credentials stored in the configuration as plaintext, but hashed credentials are supported without enabling this option.
 
 .. _setting-webserver-loglevel:
 
@@ -1825,10 +1909,12 @@ Maximum request/response body size in megabytes.
 
 ``webserver-password``
 ----------------------
+.. versionchanged:: 4.6.0
+  This setting now accepts a hashed and salted version.
 
 -  String
 
-The plaintext password required for accessing the webserver.
+Password required to access the webserver. Since 4.6.0 the password can be hashed and salted using ``pdnsutil hash-password`` instead of being present in the configuration in plaintext, but the plaintext version is still supported.
 
 .. _setting-webserver-port:
 

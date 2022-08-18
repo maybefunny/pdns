@@ -100,7 +100,7 @@ bool Bind2Backend::unpublishDomainKey(const DNSName& name, unsigned int id)
   return false;
 }
 
-bool Bind2Backend::getTSIGKey(const DNSName& name, DNSName* algorithm, string* content)
+bool Bind2Backend::getTSIGKey(const DNSName& name, DNSName& algorithm, string& content)
 {
   return false;
 }
@@ -323,8 +323,8 @@ bool Bind2Backend::getDomainKeys(const DNSName& name, std::vector<KeyData>& keys
     SSqlStatement::row_t row;
     while (d_getDomainKeysQuery_stmt->hasNextRow()) {
       d_getDomainKeysQuery_stmt->nextRow(row);
-      kd.id = pdns_stou(row[0]);
-      kd.flags = pdns_stou(row[1]);
+      pdns::checked_stoi_into(kd.id, row[0]);
+      pdns::checked_stoi_into(kd.flags, row[1]);
       kd.active = (row[2] == "1");
       kd.published = (row[3] == "1");
       kd.content = row[4];
@@ -382,8 +382,6 @@ bool Bind2Backend::addDomainKey(const DNSName& name, const KeyData& key, int64_t
     id = -2;
     return true;
   }
-
-  return false;
 }
 
 bool Bind2Backend::activateDomainKey(const DNSName& name, unsigned int id)
@@ -442,7 +440,7 @@ bool Bind2Backend::unpublishDomainKey(const DNSName& name, unsigned int id)
   return true;
 }
 
-bool Bind2Backend::getTSIGKey(const DNSName& name, DNSName* algorithm, string* content)
+bool Bind2Backend::getTSIGKey(const DNSName& name, DNSName& algorithm, string& content)
 {
   if (!d_dnssecdb || d_hybrid)
     return false;
@@ -451,12 +449,11 @@ bool Bind2Backend::getTSIGKey(const DNSName& name, DNSName* algorithm, string* c
     d_getTSIGKeyQuery_stmt->bind("key_name", name)->execute();
 
     SSqlStatement::row_t row;
-    content->clear();
     while (d_getTSIGKeyQuery_stmt->hasNextRow()) {
       d_getTSIGKeyQuery_stmt->nextRow(row);
-      if (row.size() >= 2 && (algorithm->empty() || *algorithm == DNSName(row[0]))) {
-        *algorithm = DNSName(row[0]);
-        *content = row[1];
+      if (row.size() >= 2 && (algorithm.empty() || algorithm == DNSName(row[0]))) {
+        algorithm = DNSName(row[0]);
+        content = row[1];
       }
     }
 
@@ -465,7 +462,7 @@ bool Bind2Backend::getTSIGKey(const DNSName& name, DNSName* algorithm, string* c
   catch (SSqlException& e) {
     throw PDNSException("Error accessing DNSSEC database in BIND backend, getTSIGKey(): " + e.txtReason());
   }
-  return !content->empty();
+  return true;
 }
 
 bool Bind2Backend::setTSIGKey(const DNSName& name, const DNSName& algorithm, const string& content)
@@ -519,7 +516,7 @@ bool Bind2Backend::getTSIGKeys(std::vector<struct TSIGKey>& keys)
   catch (SSqlException& e) {
     throw PDNSException("Error accessing DNSSEC database in BIND backend, getTSIGKeys(): " + e.txtReason());
   }
-  return !keys.empty();
+  return true;
 }
 
 #endif

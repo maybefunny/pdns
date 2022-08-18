@@ -23,6 +23,7 @@
 #include "config.h"
 #endif
 #include "auth-caches.hh"
+#include "auth-zonecache.hh"
 #include "utility.hh"
 #include <errno.h>
 #include "communicator.hh"
@@ -46,27 +47,27 @@
 void CommunicatorClass::queueNotifyDomain(const DomainInfo& di, UeberBackend* B)
 {
   bool hasQueuedItem=false;
-  set<string> nsset, ips;
+  set<string> ips;
+  set<DNSName> nsset;
   DNSZoneRecord rr;
   FindNS fns;
-
 
   try {
   if (d_onlyNotify.size()) {
     B->lookup(QType(QType::NS), di.zone, di.id);
     while(B->get(rr))
-      nsset.insert(getRR<NSRecordContent>(rr.dr)->getNS().toString());
+      nsset.insert(getRR<NSRecordContent>(rr.dr)->getNS());
 
-    for(const auto & j : nsset) {
-      vector<string> nsips=fns.lookup(DNSName(j), B);
+    for(const auto & ns : nsset) {
+      vector<string> nsips=fns.lookup(ns, B);
       if(nsips.empty())
-        g_log<<Logger::Warning<<"Unable to queue notification of domain '"<<di.zone<<"': nameservers do not resolve!"<<endl;
+        g_log<<Logger::Warning<<"Unable to queue notification of domain '"<<di.zone<<"' to nameserver '"<<ns<<"': nameserver does not resolve!"<<endl;
       else
         for(const auto & nsip : nsips) {
           const ComboAddress caIp(nsip, 53);
           if(!d_preventSelfNotification || !AddressIsUs(caIp)) {
             if(!d_onlyNotify.match(&caIp))
-              g_log<<Logger::Notice<<"Skipped notification of domain '"<<di.zone<<"' to "<<j<<" because it does not match only-notify."<<endl;
+              g_log<<Logger::Notice<<"Skipped notification of domain '"<<di.zone<<"' to "<<ns<<" because "<<caIp<<" does not match only-notify."<<endl;
             else
               ips.insert(caIp.toStringWithPort());
           }
@@ -136,32 +137,76 @@ void NotificationQueue::dump()
   }
 }
 
+void CommunicatorClass::getUpdatedProducers(UeberBackend* B, vector<DomainInfo>& domains, const std::unordered_set<DNSName>& catalogs, CatalogHashMap& catalogHashes)
+{
+  std::string metaHash;
+  std::string mapHash;
+  for (auto& ch : catalogHashes) {
+    if (!catalogs.count(ch.first)) {
+      g_log << Logger::Warning << "orphaned member zones found with catalog '" << ch.first << "'" << endl;
+      continue;
+    }
+
+    if (!B->getDomainMetadata(ch.first, "CATALOG-HASH", metaHash)) {
+      metaHash.clear();
+    }
+
+    mapHash = Base64Encode(ch.second.digest());
+    if (mapHash != metaHash) {
+      DomainInfo di;
+      if (B->getDomainInfo(ch.first, di)) {
+        if (di.kind != DomainInfo::Producer) {
+          g_log << Logger::Warning << "zone '" << di.zone << "' is no producer zone" << endl;
+          continue;
+        }
+
+        B->setDomainMetadata(di.zone, "CATALOG-HASH", mapHash);
+
+        g_log << Logger::Warning << "new CATALOG-HASH '" << mapHash << "' for zone '" << di.zone << "'" << endl;
+
+        SOAData sd;
+        if (!B->getSOAUncached(di.zone, sd)) {
+          g_log << Logger::Warning << "SOA lookup failed for producer zone '" << di.zone << "'" << endl;
+          continue;
+        }
+
+        DNSResourceRecord rr;
+        makeIncreasedSOARecord(sd, "EPOCH", "", rr);
+        di.backend->startTransaction(sd.qname, -1);
+        if (!di.backend->replaceRRSet(di.id, rr.qname, rr.qtype, vector<DNSResourceRecord>(1, rr))) {
+          di.backend->abortTransaction();
+          throw PDNSException("backend hosting producer zone '" + sd.qname.toLogString() + "' does not support editing records");
+        }
+        di.backend->commitTransaction();
+
+        domains.emplace_back(di);
+      }
+    }
+  }
+}
+
 void CommunicatorClass::masterUpdateCheck(PacketHandler *P)
 {
   if(!::arg().mustDo("primary"))
-    return; 
+    return;
 
   UeberBackend *B=P->getBackend();
   vector<DomainInfo> cmdomains;
-  B->getUpdatedMasters(&cmdomains);
-  
+  std::unordered_set<DNSName> catalogs;
+  CatalogHashMap catalogHashes;
+  B->getUpdatedMasters(cmdomains, catalogs, catalogHashes);
+  getUpdatedProducers(B, cmdomains, catalogs, catalogHashes);
+
   if(cmdomains.empty()) {
-    if(d_masterschanged)
-      g_log<<Logger::Info<<"No master domains need notifications"<<endl;
-    d_masterschanged=false;
+    g_log << Logger::Info << "no primary or producer domains need notifications" << endl;
   }
   else {
-    d_masterschanged=true;
-    g_log<<Logger::Notice<<cmdomains.size()<<" domain"<<(cmdomains.size()>1 ? "s" : "")<<" for which we are master need"<<
-      (cmdomains.size()>1 ? "" : "s")<<
-      " notifications"<<endl;
+    g_log << Logger::Info << cmdomains.size() << " domain" << addS(cmdomains.size()) << " for which we are primary or consumer need" << addS(cmdomains.size()) << " notifications" << endl;
   }
 
-  // figure out A records of everybody needing notification
-  // do this via the FindNS class, d_fns
-  
   for(auto& di : cmdomains) {
     purgeAuthCachesExact(di.zone);
+    g_zoneCache.add(di.zone, di.id);
     queueNotifyDomain(di, B);
     di.backend->setNotified(di.id, di.serial);
   }
@@ -254,8 +299,8 @@ void CommunicatorClass::sendNotification(int sock, const DNSName& domain, const 
   pw.getHeader()->aa = true; 
 
   if (tsigkeyname.empty() == false) {
-    if (!B->getTSIGKey(tsigkeyname, &tsigalgorithm, &tsigsecret64)) {
-      g_log<<Logger::Warning<<"TSIG key '"<<tsigkeyname<<"' for domain '"<<domain<<"' not found"<<endl;
+    if (!B->getTSIGKey(tsigkeyname, tsigalgorithm, tsigsecret64)) {
+      g_log << Logger::Error << "TSIG key '" << tsigkeyname << "' for domain '" << domain << "' not found" << endl;
       return;
     }
     TSIGRecordContent trc;
@@ -281,18 +326,22 @@ void CommunicatorClass::sendNotification(int sock, const DNSName& domain, const 
 
 void CommunicatorClass::drillHole(const DNSName &domain, const string &ip)
 {
-  std::lock_guard<std::mutex> l(d_holelock);
-  d_holes[make_pair(domain,ip)]=time(nullptr);
+  (*d_holes.lock())[pair(domain,ip)]=time(nullptr);
 }
 
 bool CommunicatorClass::justNotified(const DNSName &domain, const string &ip)
 {
-  std::lock_guard<std::mutex> l(d_holelock);
-  if(d_holes.find(make_pair(domain,ip))==d_holes.end()) // no hole
+  auto holes = d_holes.lock();
+  auto it = holes->find(pair(domain,ip));
+  if (it == holes->end()) {
+    // no hole
     return false;
+  }
 
-  if(d_holes[make_pair(domain,ip)]>time(nullptr)-900)    // recent hole
+  if (it->second > time(nullptr)-900) {
+    // recent hole
     return true;
+  }
 
   // do we want to purge this? XXX FIXME 
   return false;

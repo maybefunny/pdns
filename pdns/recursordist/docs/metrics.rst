@@ -238,7 +238,8 @@ counts the number of queries to locally hosted authoritative zones (:ref:`settin
 
 cache-bytes
 ^^^^^^^^^^^
-size of the cache in bytes
+size of the cache in bytes (disabled by default, see :ref:`setting-stats-rec-control-disabled-list`)
+This metric is a rough estimate and takes a long time to compute, and is therefore not enabled in default outputs.
 
 cache-entries
 ^^^^^^^^^^^^^
@@ -264,6 +265,8 @@ client-parse-errors
 ^^^^^^^^^^^^^^^^^^^
 counts number of client packets that could   not be parsed
 
+.. _stat-concurrent-queries:
+
 concurrent-queries
 ^^^^^^^^^^^^^^^^^^
 shows the number of MThreads currently   running
@@ -284,28 +287,22 @@ cpu-steal
 
 Stolen time, which is the time spent by the whole system in other operating systems when running in a virtualized environment, in units of USER_HZ.
 
-cumul-answers-x
-^^^^^^^^^^^^^^^^^^
+
+cumul-authanswers-x
+^^^^^^^^^^^^^^^^^^^^^
 .. versionadded:: 4.6
 
-Cumulative counts of answer times in buckets less or equal than x microseconds.
+Cumulative counts of answer times of authoritative servers in buckets less than x microseconds.
+(disabled by default, see :ref:`setting-stats-rec-control-disabled-list`)
+These metrics are useful for Prometheus and not listed in other outputs by default.
+
+cumul-clientanswers-x
+^^^^^^^^^^^^^^^^^^^^^
+.. versionadded:: 4.6
+
+Cumulative counts of our answer times to clients in buckets less or equal than x microseconds.
 These metrics include packet cache hits.
-These metrics are useful for Prometheus and not listed other outputs by default.
-
-
-cumul-auth4-answers-x
-^^^^^^^^^^^^^^^^^^^^^
-.. versionadded:: 4.6
-
-Cumulative counts of answer times of authoritative servers over IPv4 in buckets less than x microseconds.
-These metrics are useful for Prometheus and not listed other outputs by default.
-
-cumul-auth6-answers-x
-^^^^^^^^^^^^^^^^^^^^^
-.. versionadded:: 4.6
-
-Cumulative counts of answer times of authoritative servers over IPv6 in buckets less than x microseconds.
-These metrics are useful for Prometheus and not listed other outputs by default.
+These metrics are useful for Prometheus and not listed in other outputs by default.
 
 dns64-prefix-answers
 ^^^^^^^^^^^^^^^^^^^^
@@ -333,7 +330,7 @@ number of queries received with the DO bit set
 
 dnssec-result-bogus
 ^^^^^^^^^^^^^^^^^^^
-number of DNSSEC validations that had the   Bogus state. Since 4.4.2 detailed counters are available, see below.
+number of responses sent, packet-cache hits excluded, that were in the DNSSEC Bogus state. Since 4.4.2 detailed counters are available, see below.
 Since 4.5.0, if :ref:`setting-x-dnssec-names` is set, a separate set of ``x-dnssec-result-...`` metrics become available, counting
 the DNSSEC validation results for names suffix-matching a name in ``x-dnssec-names``.
 
@@ -342,91 +339,91 @@ dnssec-result-bogus-no-valid-dnskey
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 .. versionadded:: 4.4.2
 
-number of DNSSEC validations that had the Bogus state because a valid DNSKEY could not be found.
+number of responses sent, packet-cache hits excluded, that were in the Bogus state because a valid DNSKEY could not be found.
 
 dnssec-result-bogus-invalid-denial
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 .. versionadded:: 4.4.2
 
-number of DNSSEC validations that had the Bogus state because a valid denial of existence proof could not be found.
+number of responses sent, packet-cache hits excluded, that were in the Bogus state because a valid denial of existence proof could not be found.
 
 dnssec-result-bogus-unable-to-get-dss
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 .. versionadded:: 4.4.2
 
-number of DNSSEC validations that had the Bogus state because a valid DS could not be retrieved.
+number of responses sent, packet-cache hits excluded, that were in the Bogus state because a valid DS could not be retrieved.
 
 dnssec-result-bogus-unable-to-get-dnskeys
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 .. versionadded:: 4.4.2
 
-number of DNSSEC validations that had the Bogus state because a valid DNSKEY could not be retrieved.
+number of responses sent, packet-cache hits excluded, that were in the Bogus state because a valid DNSKEY could not be retrieved.
 
 dnssec-result-bogus-self-signed-ds
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 .. versionadded:: 4.4.2
 
-number of DNSSEC validations that had the Bogus state because a DS record was signed by itself.
+number of responses sent, packet-cache hits excluded, that were in the Bogus state because a DS record was signed by itself.
 
 dnssec-result-bogus-no-rrsig
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 .. versionadded:: 4.4.2
 
-number of DNSSEC validations that had the Bogus state because required RRSIG records were not present in an answer.
+number of responses sent, packet-cache hits excluded, that were in the Bogus state because required RRSIG records were not present in an answer.
 
 dnssec-result-bogus-no-valid-rrsig
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 .. versionadded:: 4.4.2
 
-number of DNSSEC validations that had the Bogus state because only invalid RRSIG records were present in an answer.
+number of responses sent, packet-cache hits excluded, that were in the Bogus state because only invalid RRSIG records were present in an answer.
 
 dnssec-result-bogus-missing-negative-indication
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 .. versionadded:: 4.4.2
 
-number of DNSSEC validations that had the Bogus state because a NODATA or NXDOMAIN answer lacked the required SOA and/or NSEC(3) records.
+number of responses sent, packet-cache hits excluded, that were in the Bogus state because a NODATA or NXDOMAIN answer lacked the required SOA and/or NSEC(3) records.
 
 dnssec-result-bogus-signature-no-yet-valid
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 .. versionadded:: 4.4.2
 
-number of DNSSEC validations that had the Bogus state because the signature inception time in the RRSIG was not yet valid.
+number of responses sent, packet-cache hits excluded, that were in the Bogus state because the signature inception time in the RRSIG was not yet valid.
 
 dnssec-result-bogus-signature-expired
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 .. versionadded:: 4.4.2
 
-number of DNSSEC validations that had the Bogus state because the signature expired time in the RRSIG was in the past.
+number of responses sent, packet-cache hits excluded, that were in the Bogus state because the signature expired time in the RRSIG was in the past.
 
 dnssec-result-bogus-unsupported-dnskey-algo
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 .. versionadded:: 4.4.2
 
-number of DNSSEC validations that had the Bogus state because a DNSKEY RRset contained only unsupported DNSSEC algorithms.
+number of responses sent, packet-cache hits excluded, that were in the Bogus state because a DNSKEY RRset contained only unsupported DNSSEC algorithms.
 
 dnssec-result-bogus-unsupported-ds-digest-type
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 .. versionadded:: 4.4.2
 
-number of DNSSEC validations that had the Bogus state because a DS RRset contained only unsupported digest types.
+number of responses sent, packet-cache hits excluded, that were in the Bogus state because a DS RRset contained only unsupported digest types.
 
 dnssec-result-bogus-no-zone-key-bit-set
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 .. versionadded:: 4.4.2
 
-number of DNSSEC validations that had the Bogus state because no DNSKEY with the Zone Key bit set was found.
+number of responses sent, packet-cache hits excluded, that were in the Bogus state because no DNSKEY with the Zone Key bit set was found.
 
 dnssec-result-bogus-revoked-dnskey
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 .. versionadded:: 4.4.2
 
-number of DNSSEC validations that had the Bogus state because all DNSKEYs were revoked.
+number of responses sent, packet-cache hits excluded, that were in the Bogus state because all DNSKEYs were revoked.
 
 dnssec-result-bogus-invalid-dnskey-protocol
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 .. versionadded:: 4.4.2
 
-number of DNSSEC validations that had the Bogus state because all DNSKEYs had invalid protocols.
+number of responses sent, packet-cache hits excluded, that were in the Bogus state because all DNSKEYs had invalid protocols.
 
 dnssec-result-indeterminate
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -434,19 +431,19 @@ number of DNSSEC validations that   had the Indeterminate state
 
 dnssec-result-insecure
 ^^^^^^^^^^^^^^^^^^^^^^
-number of DNSSEC validations that had the   Insecure state
+number of responses sent, packet-cache hits excluded, that were in the Insecure state
 
 dnssec-result-nta
 ^^^^^^^^^^^^^^^^^
-number of DNSSEC validations that had the NTA   (negative trust anchor) state
+number of responses sent, packet-cache hits excluded, that were in the NTA (negative trust anchor) state
 
 dnssec-result-secure
 ^^^^^^^^^^^^^^^^^^^^
-number of DNSSEC validations that had the   Secure state
+number of responses sent, packet-cache hits excluded, that were in the Secure state
 
 dnssec-validations
 ^^^^^^^^^^^^^^^^^^
-number of DNSSEC validations performed
+number of responses sent, packet-cache hits excluded, for which a DNSSEC validation was requested by either the client or the configuration
 
 dont-outqueries
 ^^^^^^^^^^^^^^^
@@ -475,12 +472,14 @@ ecs-v4-response-bits-*
 .. versionadded:: 4.2.0
 
 number of responses received from authoritative servers with an IPv4 EDNS Client Subnet option we used, of this subnet size (1 to 32).
+(disabled by default, see :ref:`setting-stats-rec-control-disabled-list`)
 
 ecs-v6-response-bits-*
 ^^^^^^^^^^^^^^^^^^^^^^
 .. versionadded:: 4.2.0
 
 number of responses received from authoritative servers with an IPv6 EDNS Client Subnet option we used, of this subnet size (1 to 128).
+(disabled by default, see :ref:`setting-stats-rec-control-disabled-list`)
 
 edns-ping-matches
 ^^^^^^^^^^^^^^^^^
@@ -492,7 +491,14 @@ number of servers that sent an invalid EDNS   PING response
 
 failed-host-entries
 ^^^^^^^^^^^^^^^^^^^
-number of servers that failed to resolve
+number of addresses in the failed NS cache.
+
+.. _stat-fd-usage:
+
+fd-usage
+^^^^^^^^
+Number of currently used file descriptors.
+Currently, this metric is available on Linux and OpenBSD only.
 
 ignored-packets
 ^^^^^^^^^^^^^^^
@@ -542,6 +548,10 @@ noerror-answers
 ^^^^^^^^^^^^^^^
 counts the number of times it answered NOERROR   since starting
 
+non-resolving-nameserver-entries
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+number of entries in the non-resolving NS name cache
+
 noping-outqueries
 ^^^^^^^^^^^^^^^^^
 number of queries sent out without ENDS PING
@@ -570,13 +580,16 @@ outgoing6-timeouts
 ^^^^^^^^^^^^^^^^^^
 counts the number of timeouts on outgoing UDP   IPv6 queries since starting (since 4.0)
 
+.. _stat-over-capacity-drops:
+
 over-capacity-drops
 ^^^^^^^^^^^^^^^^^^^
 questions dropped because over maximum   concurrent query limit (since 3.2)
 
 packetcache-bytes
 ^^^^^^^^^^^^^^^^^
-size of the packet cache in bytes (since   3.3.1)
+size of the packet cache in bytes (since 3.3.1) (disabled by default, see :ref:`setting-stats-rec-control-disabled-list`)
+This metric is a rough estimate and takes a long time to compute, and is therefore not enabled in default outputs.
 
 packetcache-entries
 ^^^^^^^^^^^^^^^^^^^
@@ -663,7 +676,10 @@ number of contended record cache lock acquisitions
 
 resource-limits
 ^^^^^^^^^^^^^^^
-counts number of queries that could not be   performed because of resource limits
+Counts the number of queries that could not be performed because of resource limits. 
+This counter is increased when Recursor encounters a network issue that does not seem to be caused by the remote end. 
+For example when it runs out of file descriptors (monitor :ref:`stat-fd-usage`) or when there is no route to a
+given IP address.
 
 security-status
 ^^^^^^^^^^^^^^^
@@ -703,9 +719,13 @@ taskqueue-size
 
 number of tasks currently in the taskqueues
 
+.. _stat-tcp-client-overflow:
+
 tcp-client-overflow
 ^^^^^^^^^^^^^^^^^^^
 number of times an IP address was denied TCP   access because it already had too many connections
+
+.. _stat-tcp-clients:
 
 tcp-clients
 ^^^^^^^^^^^
@@ -754,6 +774,14 @@ number of TCP questions denied because of   allow-from restrictions
 unauthorized-udp
 ^^^^^^^^^^^^^^^^
 number of UDP questions denied because of   allow-from restrictions
+
+source-disallowed-notify
+^^^^^^^^^^^^^^^^^^^^^^^^
+number of NOTIFY operations denied because of allow-notify-from restrictions
+
+zone-disallowed-notify
+^^^^^^^^^^^^^^^^^^^^^^
+number of NOTIFY operations denied because of allow-notify-for restrictions
 
 unexpected-packets
 ^^^^^^^^^^^^^^^^^^

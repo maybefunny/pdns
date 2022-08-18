@@ -1,9 +1,12 @@
+#include <openssl/err.h>
+#include <openssl/pem.h>
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
 #include <decaf.hxx>
 #include <decaf/eddsa.hxx>
 #include <decaf/spongerng.hxx>
+#include "dnsseckeeper.hh"
 
 #include "dnssecinfra.hh"
 
@@ -12,12 +15,46 @@ using namespace decaf;
 class DecafED25519DNSCryptoKeyEngine : public DNSCryptoKeyEngine
 {
 public:
-  explicit DecafED25519DNSCryptoKeyEngine(unsigned int algo) : DNSCryptoKeyEngine(algo)
+  explicit DecafED25519DNSCryptoKeyEngine(unsigned int algo) :
+    DNSCryptoKeyEngine(algo)
   {
-
   }
   string getName() const override { return "Decaf ED25519"; }
   void create(unsigned int bits) override;
+
+#if defined(HAVE_LIBCRYPTO_ED25519)
+  /**
+   * \brief Creates an ED25519 key engine from a PEM file.
+   *
+   * Receives an open file handle with PEM contents and creates an
+   * ED25519 key engine.
+   *
+   * \param[in] drc Key record contents to be populated.
+   *
+   * \param[in] filename Only used for providing filename information in
+   * error messages.
+   *
+   * \param[in] fp An open file handle to a file containing ED25519 PEM
+   * contents.
+   *
+   * \return An ED25519 key engine populated with the contents of the
+   * PEM file.
+   */
+  void createFromPEMFile(DNSKEYRecordContent& drc, const std::string& filename, std::FILE& fp) override;
+
+  /**
+   * \brief Writes this key's contents to a file.
+   *
+   * Receives an open file handle and writes this key's contents to the
+   * file.
+   *
+   * \param[in] fp An open file handle for writing.
+   *
+   * \exception std::runtime_error In case of OpenSSL errors.
+   */
+  void convertToPEM(std::FILE& fp) const override;
+#endif
+
   storvector_t convertToISCVector() const override;
   std::string getPubKeyHash() const override;
   std::string sign(const std::string& msg) const override;
@@ -26,8 +63,6 @@ public:
   int getBits() const override;
   void fromISCMap(DNSKEYRecordContent& drc, std::map<std::string, std::string>& stormap) override;
   void fromPublicKeyString(const std::string& content) override;
-  void fromPEMString(DNSKEYRecordContent& drc, const std::string& raw) override
-  {}
 
   static std::unique_ptr<DNSCryptoKeyEngine> maker(unsigned int algorithm)
   {
@@ -41,8 +76,8 @@ private:
 
 void DecafED25519DNSCryptoKeyEngine::create(unsigned int bits)
 {
-  if(bits != (unsigned int)getBits()) {
-    throw runtime_error("Unsupported key length of "+std::to_string(bits)+" bits requested, DecafED25519 class");
+  if (bits != (unsigned int)getBits()) {
+    throw runtime_error("Unsupported key length of " + std::to_string(bits) + " bits requested, DecafED25519 class");
   }
 
   SpongeRng rng("/dev/urandom");
@@ -53,6 +88,42 @@ void DecafED25519DNSCryptoKeyEngine::create(unsigned int bits)
   priv.serialize_into(d_seckey);
   pub.serialize_into(d_pubkey);
 }
+
+#if defined(HAVE_LIBCRYPTO_ED25519)
+void DecafED25519DNSCryptoKeyEngine::createFromPEMFile(DNSKEYRecordContent& drc, const string& filename, std::FILE& fp)
+{
+  drc.d_algorithm = d_algorithm;
+  auto key = std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)>(PEM_read_PrivateKey(&fp, nullptr, nullptr, nullptr), &EVP_PKEY_free);
+  if (key == nullptr) {
+    throw runtime_error(getName() + ": Failed to read private key from PEM file `" + filename + "`");
+  }
+
+  std::size_t keylen = DECAF_EDDSA_25519_PRIVATE_BYTES;
+  int ret = EVP_PKEY_get_raw_private_key(key.get(), d_seckey, &keylen);
+  if (ret == 0) {
+    throw runtime_error(getName() + ": Failed to get private key from PEM file contents `" + filename + "`");
+  }
+
+  keylen = DECAF_EDDSA_25519_PUBLIC_BYTES;
+  ret = EVP_PKEY_get_raw_public_key(key.get(), d_pubkey, &keylen);
+  if (ret == 0) {
+    throw runtime_error(getName() + ": Failed to get public key from PEM file contents `" + filename + "`");
+  }
+}
+
+void DecafED25519DNSCryptoKeyEngine::convertToPEM(std::FILE& fp) const
+{
+  auto key = std::unique_ptr<EVP_PKEY, void (*)(EVP_PKEY*)>(EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr, d_seckey, DECAF_EDDSA_25519_PRIVATE_BYTES), EVP_PKEY_free);
+  if (key == nullptr) {
+    throw runtime_error(getName() + ": Could not create private key from buffer");
+  }
+
+  auto ret = PEM_write_PrivateKey(&fp, key.get(), nullptr, nullptr, 0, nullptr, nullptr);
+  if (ret == 0) {
+    throw runtime_error(getName() + ": Could not convert private key to PEM");
+  }
+}
+#endif
 
 int DecafED25519DNSCryptoKeyEngine::getBits() const
 {
@@ -67,15 +138,15 @@ DNSCryptoKeyEngine::storvector_t DecafED25519DNSCryptoKeyEngine::convertToISCVec
     PrivateKey: ODIyNjAzODQ2MjgwODAxMjI2NDUxOTAyMDQxNDIyNjI=
   */
 
-  storvector_t storvector;
-
-  storvector.push_back(make_pair("Algorithm", "15 (ED25519)"));
-  storvector.push_back(make_pair("PrivateKey", string((char*)d_seckey, DECAF_EDDSA_25519_PRIVATE_BYTES)));
+  auto storvector = storvector_t{
+    {"Algorithm", "15 (ED25519)"},
+    {"PrivateKey", string((char*)d_seckey, DECAF_EDDSA_25519_PRIVATE_BYTES)},
+  };
 
   return storvector;
 }
 
-void DecafED25519DNSCryptoKeyEngine::fromISCMap(DNSKEYRecordContent& drc, std::map<std::string, std::string>& stormap )
+void DecafED25519DNSCryptoKeyEngine::fromISCMap(DNSKEYRecordContent& drc, std::map<std::string, std::string>& stormap)
 {
   /*
     Private-key-format: v1.2
@@ -83,7 +154,7 @@ void DecafED25519DNSCryptoKeyEngine::fromISCMap(DNSKEYRecordContent& drc, std::m
     PrivateKey: ODIyNjAzODQ2MjgwODAxMjI2NDUxOTAyMDQxNDIyNjI=
   */
 
-  drc.d_algorithm = pdns_stou(stormap["algorithm"]);
+  pdns::checked_stoi_into(drc.d_algorithm, stormap["algorithm"]);
   string privateKey = stormap["privatekey"];
 
   if (privateKey.length() != DECAF_EDDSA_25519_PRIVATE_BYTES)
@@ -137,23 +208,57 @@ bool DecafED25519DNSCryptoKeyEngine::verify(const std::string& msg, const std::s
 
   try {
     pub.verify(sig, message);
-  } catch(const CryptoException& e) {
+  }
+  catch (const CryptoException& e) {
     return false;
   }
 
   return true;
 }
 
-
 class DecafED448DNSCryptoKeyEngine : public DNSCryptoKeyEngine
 {
 public:
-  explicit DecafED448DNSCryptoKeyEngine(unsigned int algo) : DNSCryptoKeyEngine(algo)
+  explicit DecafED448DNSCryptoKeyEngine(unsigned int algo) :
+    DNSCryptoKeyEngine(algo)
   {
-
   }
   string getName() const override { return "Decaf ED448"; }
   void create(unsigned int bits) override;
+
+#if defined(HAVE_LIBCRYPTO_ED448)
+  /**
+   * \brief Creates an ED448 key engine from a PEM file.
+   *
+   * Receives an open file handle with PEM contents and creates an ED448
+   * key engine.
+   *
+   * \param[in] drc Key record contents to be populated.
+   *
+   * \param[in] filename Only used for providing filename information in
+   * error messages.
+   *
+   * \param[in] fp An open file handle to a file containing ED448 PEM
+   * contents.
+   *
+   * \return An ED448 key engine populated with the contents of the PEM
+   * file.
+   */
+  void createFromPEMFile(DNSKEYRecordContent& drc, const std::string& filename, std::FILE& fp) override;
+
+  /**
+   * \brief Writes this key's contents to a file.
+   *
+   * Receives an open file handle and writes this key's contents to the
+   * file.
+   *
+   * \param[in] fp An open file handle for writing.
+   *
+   * \exception std::runtime_error In case of OpenSSL errors.
+   */
+  void convertToPEM(std::FILE& fp) const override;
+#endif
+
   storvector_t convertToISCVector() const override;
   std::string getPubKeyHash() const override;
   std::string sign(const std::string& msg) const override;
@@ -162,8 +267,6 @@ public:
   int getBits() const override;
   void fromISCMap(DNSKEYRecordContent& drc, std::map<std::string, std::string>& stormap) override;
   void fromPublicKeyString(const std::string& content) override;
-  void fromPEMString(DNSKEYRecordContent& drc, const std::string& raw) override
-  {}
 
   static std::unique_ptr<DNSCryptoKeyEngine> maker(unsigned int algorithm)
   {
@@ -177,8 +280,8 @@ private:
 
 void DecafED448DNSCryptoKeyEngine::create(unsigned int bits)
 {
-  if(bits != (unsigned int)getBits()) {
-    throw runtime_error("Unsupported key length of "+std::to_string(bits)+" bits requested, DecafED448 class");
+  if (bits != (unsigned int)getBits()) {
+    throw runtime_error("Unsupported key length of " + std::to_string(bits) + " bits requested, DecafED448 class");
   }
 
   SpongeRng rng("/dev/urandom");
@@ -189,6 +292,42 @@ void DecafED448DNSCryptoKeyEngine::create(unsigned int bits)
   priv.serialize_into(d_seckey);
   pub.serialize_into(d_pubkey);
 }
+
+#if defined(HAVE_LIBCRYPTO_ED448)
+void DecafED448DNSCryptoKeyEngine::createFromPEMFile(DNSKEYRecordContent& drc, const string& filename, std::FILE& fp)
+{
+  drc.d_algorithm = d_algorithm;
+  auto key = std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)>(PEM_read_PrivateKey(&fp, nullptr, nullptr, nullptr), &EVP_PKEY_free);
+  if (key == nullptr) {
+    throw runtime_error(getName() + ": Failed to read private key from PEM file `" + filename + "`");
+  }
+
+  std::size_t keylen = DECAF_EDDSA_448_PRIVATE_BYTES;
+  int ret = EVP_PKEY_get_raw_private_key(key.get(), d_seckey, &keylen);
+  if (ret == 0) {
+    throw runtime_error(getName() + ": Failed to get private key from PEM file contents `" + filename + "`");
+  }
+
+  keylen = DECAF_EDDSA_448_PUBLIC_BYTES;
+  ret = EVP_PKEY_get_raw_public_key(key.get(), d_pubkey, &keylen);
+  if (ret == 0) {
+    throw runtime_error(getName() + ": Failed to get public key from PEM file contents `" + filename + "`");
+  }
+}
+
+void DecafED448DNSCryptoKeyEngine::convertToPEM(std::FILE& fp) const
+{
+  auto key = std::unique_ptr<EVP_PKEY, void (*)(EVP_PKEY*)>(EVP_PKEY_new_raw_private_key(EVP_PKEY_ED448, nullptr, d_seckey, DECAF_EDDSA_448_PRIVATE_BYTES), EVP_PKEY_free);
+  if (key == nullptr) {
+    throw runtime_error(getName() + ": Could not create private key from buffer");
+  }
+
+  auto ret = PEM_write_PrivateKey(&fp, key.get(), nullptr, nullptr, 0, nullptr, nullptr);
+  if (ret == 0) {
+    throw runtime_error(getName() + ": Could not convert private key to PEM");
+  }
+}
+#endif
 
 int DecafED448DNSCryptoKeyEngine::getBits() const
 {
@@ -203,15 +342,15 @@ DNSCryptoKeyEngine::storvector_t DecafED448DNSCryptoKeyEngine::convertToISCVecto
     PrivateKey: xZ+5Cgm463xugtkY5B0Jx6erFTXp13rYegst0qRtNsOYnaVpMx0Z/c5EiA9x8wWbDDct/U3FhYWA
   */
 
-  storvector_t storvector;
-
-  storvector.push_back(make_pair("Algorithm", "16 (ED448)"));
-  storvector.push_back(make_pair("PrivateKey", string((char*)d_seckey, DECAF_EDDSA_448_PRIVATE_BYTES)));
+  auto storvector = storvector_t{
+    {"Algorithm", "16 (ED448)"},
+    {"PrivateKey", string((char*)d_seckey, DECAF_EDDSA_448_PRIVATE_BYTES)},
+  };
 
   return storvector;
 }
 
-void DecafED448DNSCryptoKeyEngine::fromISCMap(DNSKEYRecordContent& drc, std::map<std::string, std::string>& stormap )
+void DecafED448DNSCryptoKeyEngine::fromISCMap(DNSKEYRecordContent& drc, std::map<std::string, std::string>& stormap)
 {
   /*
     Private-key-format: v1.2
@@ -219,7 +358,7 @@ void DecafED448DNSCryptoKeyEngine::fromISCMap(DNSKEYRecordContent& drc, std::map
     PrivateKey: xZ+5Cgm463xugtkY5B0Jx6erFTXp13rYegst0qRtNsOYnaVpMx0Z/c5EiA9x8wWbDDct/U3FhYWA
   */
 
-  drc.d_algorithm = pdns_stou(stormap["algorithm"]);
+  pdns::checked_stoi_into(drc.d_algorithm, stormap["algorithm"]);
   string privateKey = stormap["privatekey"];
 
   if (privateKey.length() != DECAF_EDDSA_448_PRIVATE_BYTES)
@@ -273,21 +412,22 @@ bool DecafED448DNSCryptoKeyEngine::verify(const std::string& msg, const std::str
 
   try {
     pub.verify(sig, message);
-  } catch(const CryptoException& e) {
+  }
+  catch (const CryptoException& e) {
     return false;
   }
 
   return true;
 }
 
-
-namespace {
-struct LoaderDecafStruct
+namespace
+{
+const struct LoaderDecafStruct
 {
   LoaderDecafStruct()
   {
-    DNSCryptoKeyEngine::report(15, &DecafED25519DNSCryptoKeyEngine::maker, true);
-    DNSCryptoKeyEngine::report(16, &DecafED448DNSCryptoKeyEngine::maker);
+    DNSCryptoKeyEngine::report(DNSSECKeeper::ED25519, &DecafED25519DNSCryptoKeyEngine::maker, true);
+    DNSCryptoKeyEngine::report(DNSSECKeeper::ED448, &DecafED448DNSCryptoKeyEngine::maker);
   }
 } loaderdecaf;
 }

@@ -31,9 +31,9 @@ public:
   /* hash the packet from the provided position, which should point right after tje qname. This skips:
      - the query ID ;
      - EDNS Cookie options, if any ;
-     - EDNS Client Subnet options, if any and skipECS is true.
+     - Any given option code present in optionsToSkip
   */
-  static uint32_t hashAfterQname(const pdns_string_view& packet, uint32_t currentHash, size_t pos, bool skipECS)
+  static uint32_t hashAfterQname(const pdns_string_view& packet, uint32_t currentHash, size_t pos, const std::unordered_set<uint16_t>& optionsToSkip = {EDNSOptionCode::COOKIE})
   {
     const size_t packetSize = packet.size();
     assert(packetSize >= sizeof(dnsheader));
@@ -44,7 +44,8 @@ public:
        + the OPT RR rdlen (2)
        = 15
     */
-    const struct dnsheader* dh = reinterpret_cast<const struct dnsheader*>(packet.data());
+    const dnsheader_aligned dnsheaderdata(packet.data());
+    const struct dnsheader *dh = dnsheaderdata.get();
     if (ntohs(dh->qdcount) != 1 || ntohs(dh->ancount) != 0 || ntohs(dh->nscount) != 0 || ntohs(dh->arcount) != 1 || (pos + 15) >= packetSize) {
       if (packetSize > pos) {
         currentHash = burtle(reinterpret_cast<const unsigned char*>(&packet.at(pos)), packetSize - pos, currentHash);
@@ -82,22 +83,12 @@ public:
         return currentHash;
       }
 
-      bool skip = false;
-      if (optionCode == EDNSOptionCode::COOKIE) {
-        skip = true;
-      }
-      else if (optionCode == EDNSOptionCode::ECS) {
-        if (skipECS) {
-          skip = true;
-        }
-      }
-
-      if (!skip) {
+      if (optionsToSkip.count(optionCode) == 0) {
         /* hash the option code, length and content */
         currentHash = burtle(reinterpret_cast<const unsigned char*>(&packet.at(pos)), 4 + optionLen, currentHash);
       }
       else {
-        /* hash the option code and length */
+        /* skip option: hash only its code and length */
         currentHash = burtle(reinterpret_cast<const unsigned char*>(&packet.at(pos)), 4, currentHash);
       }
 
@@ -114,45 +105,40 @@ public:
 
   static uint32_t hashHeaderAndQName(const std::string& packet, size_t& pos)
   {
-    uint32_t currentHash = 0;
     const size_t packetSize = packet.size();
     assert(packetSize >= sizeof(dnsheader));
-    currentHash = burtle(reinterpret_cast<const unsigned char*>(&packet.at(2)), sizeof(dnsheader) - 2, currentHash); // rest of dnsheader, skip id
-    pos = sizeof(dnsheader);
+    // Quite some bits in the header are actually irrelevant for
+    // incoming queries.  If we ever change that and ignore them for
+    // hashing, don't forget to also adapt the `queryHeaderMatches`
+    // code, as it should be consistent with the hash function.
+    uint32_t currentHash = burtle(reinterpret_cast<const unsigned char*>(&packet.at(2)), sizeof(dnsheader) - 2, 0); // rest of dnsheader, skip id
 
-    for (; pos < packetSize; ) {
+    for (pos = sizeof(dnsheader); pos < packetSize; ) {
       const unsigned char labelLen = static_cast<unsigned char>(packet.at(pos));
-      currentHash = burtle(&labelLen, 1, currentHash);
       ++pos;
       if (labelLen == 0) {
         break;
       }
-
-      for (size_t idx = 0; idx < labelLen && pos < packetSize; ++idx, ++pos) {
-        const unsigned char l = dns_tolower(packet.at(pos));
-        currentHash = burtle(&l, 1, currentHash);
-      }
+      pos = std::min(pos + labelLen, packetSize);
     }
-
-    return currentHash;
+    return burtleCI(reinterpret_cast<const unsigned char*>(&packet.at(sizeof(dnsheader))), pos - sizeof(dnsheader), currentHash);
   }
 
   /* hash the packet from the beginning, including the qname. This skips:
      - the query ID ;
      - EDNS Cookie options, if any ;
-     - EDNS Client Subnet options, if any and skipECS is true.
+     - Any given option code present in optionsToSkip
   */
-  static uint32_t canHashPacket(const std::string& packet, bool skipECS)
+  static uint32_t canHashPacket(const std::string& packet, const std::unordered_set<uint16_t>& optionsToSkip = {EDNSOptionCode::COOKIE})
   {
     size_t pos = 0;
     uint32_t currentHash = hashHeaderAndQName(packet, pos);
-    size_t packetSize = packet.size();
 
-    if (pos >= packetSize) {
+    if (pos >= packet.size()) {
       return currentHash;
     }
 
-    return hashAfterQname(packet, currentHash, pos, skipECS);
+    return hashAfterQname(packet, currentHash, pos, optionsToSkip);
   }
 
   static bool queryHeaderMatches(const std::string& cachedQuery, const std::string& query)
@@ -183,7 +169,8 @@ public:
        + the OPT RR rdlen (2)
        = 15
     */
-    const struct dnsheader* dh = reinterpret_cast<const struct dnsheader*>(query.data());
+    const dnsheader_aligned dnsheaderdata(query.data());
+    const struct dnsheader* dh = dnsheaderdata.get();
     if (ntohs(dh->qdcount) != 1 || ntohs(dh->ancount) != 0 || ntohs(dh->nscount) != 0 || ntohs(dh->arcount) != 1 || (pos + 15) >= querySize || optionsToIgnore.empty()) {
       return cachedQuery.compare(pos, cachedQuerySize - pos, query, pos, querySize - pos) == 0;
     }

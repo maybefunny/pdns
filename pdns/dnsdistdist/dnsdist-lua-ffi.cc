@@ -23,6 +23,7 @@
 #include "dnsdist-lua-ffi.hh"
 #include "dnsdist-lua.hh"
 #include "dnsdist-ecs.hh"
+#include "dolog.hh"
 
 uint16_t dnsdist_ffi_dnsquestion_get_qtype(const dnsdist_ffi_dnsquestion_t* dq)
 {
@@ -54,6 +55,20 @@ void dnsdist_ffi_dnsquestion_get_localaddr(const dnsdist_ffi_dnsquestion_t* dq, 
 void dnsdist_ffi_dnsquestion_get_remoteaddr(const dnsdist_ffi_dnsquestion_t* dq, const void** addr, size_t* addrSize)
 {
   dnsdist_ffi_comboaddress_to_raw(*dq->dq->remote, addr, addrSize);
+}
+
+size_t dnsdist_ffi_dnsquestion_get_mac_addr(const dnsdist_ffi_dnsquestion_t* dq, void* buffer, size_t bufferSize)
+{
+  if (dq == nullptr) {
+    return 0;
+  }
+
+  auto ret = getMACAddress(*dq->dq->remote, reinterpret_cast<char*>(buffer), bufferSize);
+  if (ret != 0) {
+    return 0;
+  }
+
+  return 6;
 }
 
 void dnsdist_ffi_dnsquestion_get_masked_remoteaddr(dnsdist_ffi_dnsquestion_t* dq, const void** addr, size_t* addrSize, uint8_t bits)
@@ -123,6 +138,32 @@ uint8_t dnsdist_ffi_dnsquestion_get_opcode(const dnsdist_ffi_dnsquestion_t* dq)
 bool dnsdist_ffi_dnsquestion_get_tcp(const dnsdist_ffi_dnsquestion_t* dq)
 {
   return dq->dq->overTCP();
+}
+
+dnsdist_ffi_protocol_type dnsdist_ffi_dnsquestion_get_protocol(const dnsdist_ffi_dnsquestion_t* dq)
+{
+  if (dq != nullptr) {
+    auto proto = dq->dq->getProtocol();
+    if (proto == dnsdist::Protocol::DoUDP) {
+      return dnsdist_ffi_protocol_type_doudp;
+    }
+    else if (proto == dnsdist::Protocol::DoTCP) {
+      return dnsdist_ffi_protocol_type_dotcp;
+    }
+    else if (proto == dnsdist::Protocol::DNSCryptUDP) {
+      return dnsdist_ffi_protocol_type_dnscryptudp;
+    }
+    else if (proto == dnsdist::Protocol::DNSCryptTCP) {
+      return dnsdist_ffi_protocol_type_dnscrypttcp;
+    }
+    else if (proto == dnsdist::Protocol::DoT) {
+      return dnsdist_ffi_protocol_type_dot;
+    }
+    else if (proto == dnsdist::Protocol::DoH) {
+      return dnsdist_ffi_protocol_type_doh;
+    }
+  }
+  return dnsdist_ffi_protocol_type_doudp;
 }
 
 bool dnsdist_ffi_dnsquestion_get_skip_cache(const dnsdist_ffi_dnsquestion_t* dq)
@@ -409,11 +450,7 @@ void dnsdist_ffi_dnsquestion_unset_temp_failure_ttl(dnsdist_ffi_dnsquestion_t* d
 
 void dnsdist_ffi_dnsquestion_set_tag(dnsdist_ffi_dnsquestion_t* dq, const char* label, const char* value)
 {
-  if (!dq->dq->qTag) {
-    dq->dq->qTag = std::make_shared<QTag>();
-  }
-
-  dq->dq->qTag->insert({label, value});
+  dq->dq->setTag(label, value);
 }
 
 size_t dnsdist_ffi_dnsquestion_get_trailing_data(dnsdist_ffi_dnsquestion_t* dq, const char** out)
@@ -436,6 +473,13 @@ void dnsdist_ffi_dnsquestion_send_trap(dnsdist_ffi_dnsquestion_t* dq, const char
   if (g_snmpAgent && g_snmpTrapsEnabled) {
     g_snmpAgent->sendDNSTrap(*dq->dq, std::string(reason, reasonLen));
   }
+}
+
+void dnsdist_ffi_dnsquestion_spoof_packet(dnsdist_ffi_dnsquestion_t* dq, const char* raw, size_t len)
+{
+  std::string result;
+  SpoofAction sa(raw, len);
+  sa(dq->dq, &result);
 }
 
 void dnsdist_ffi_dnsquestion_spoof_raw(dnsdist_ffi_dnsquestion_t* dq, const dnsdist_ffi_raw_value_t* values, size_t valuesCount)
@@ -520,12 +564,12 @@ uint64_t dnsdist_ffi_server_get_outstanding(const dnsdist_ffi_server_t* server)
 
 int dnsdist_ffi_server_get_weight(const dnsdist_ffi_server_t* server)
 {
-  return server->server->weight;
+  return server->server->d_config.d_weight;
 }
 
 int dnsdist_ffi_server_get_order(const dnsdist_ffi_server_t* server)
 {
-  return server->server->order;
+  return server->server->d_config.order;
 }
 
 double dnsdist_ffi_server_get_latency(const dnsdist_ffi_server_t* server)
@@ -548,21 +592,47 @@ const char* dnsdist_ffi_server_get_name_with_addr(const dnsdist_ffi_server_t* se
   return server->server->getNameWithAddr().c_str();
 }
 
-const std::string& getLuaFFIWrappers()
+void dnsdist_ffi_dnsresponse_set_min_ttl(dnsdist_ffi_dnsresponse_t* dr, uint32_t min)
 {
-  static const std::string interface =
-#include "dnsdist-lua-ffi-interface.inc"
-    ;
-  static const std::string code = R"FFICodeContent(
+  dnsdist_ffi_dnsresponse_limit_ttl(dr, min, std::numeric_limits<uint32_t>::max());
+}
+
+void dnsdist_ffi_dnsresponse_set_max_ttl(dnsdist_ffi_dnsresponse_t* dr, uint32_t max)
+{
+  dnsdist_ffi_dnsresponse_limit_ttl(dr, 0, max);
+}
+
+void dnsdist_ffi_dnsresponse_limit_ttl(dnsdist_ffi_dnsresponse_t* dr, uint32_t min, uint32_t max)
+{
+  if (dr->dr != nullptr) {
+    std::string result;
+    LimitTTLResponseAction ac(min, max);
+    ac(dr->dr, &result);
+  }
+}
+
+void dnsdist_ffi_dnsresponse_clear_records_type(dnsdist_ffi_dnsresponse_t* dr, uint16_t qtype)
+{
+  if (dr->dr != nullptr) {
+    clearDNSPacketRecordTypes(dr->dr->getMutableData(), std::set<QType>{qtype});
+  }
+}
+
+static constexpr char s_lua_ffi_code[] = R"FFICodeContent(
   local ffi = require("ffi")
   local C = ffi.C
 
   ffi.cdef[[
-)FFICodeContent" + interface + R"FFICodeContent(
+)FFICodeContent"
+#include "dnsdist-lua-ffi-interface.inc"
+R"FFICodeContent(
   ]]
 
 )FFICodeContent";
-  return code;
+
+const char* getLuaFFIWrappers()
+{
+  return s_lua_ffi_code;
 }
 
 void setupLuaLoadBalancingContext(LuaContext& luaCtx)
@@ -584,4 +654,64 @@ void setupLuaFFIPerThreadContext(LuaContext& luaCtx)
 #ifdef LUAJIT_VERSION
   luaCtx.executeCode(getLuaFFIWrappers());
 #endif
+}
+
+size_t dnsdist_ffi_generate_proxy_protocol_payload(const size_t addrSize, const void* srcAddr, const void* dstAddr, const uint16_t srcPort, const uint16_t dstPort, const bool tcp, const size_t valuesCount, const dnsdist_ffi_proxy_protocol_value* values, void* out, const size_t outSize)
+{
+  try {
+    ComboAddress src, dst;
+    if (addrSize != sizeof(src.sin4.sin_addr) && addrSize != sizeof(src.sin6.sin6_addr.s6_addr)) {
+      return 0;
+    }
+
+    src = makeComboAddressFromRaw(addrSize == sizeof(src.sin4.sin_addr) ? 4 : 6, reinterpret_cast<const char*>(srcAddr), addrSize);
+    src.sin4.sin_port = htons(srcPort);
+    dst = makeComboAddressFromRaw(addrSize == sizeof(dst.sin4.sin_addr) ? 4 : 6, reinterpret_cast<const char*>(dstAddr), addrSize);
+    dst.sin4.sin_port = htons(dstPort);
+
+    std::vector<ProxyProtocolValue> valuesVect;
+    if (valuesCount > 0) {
+      valuesVect.reserve(valuesCount);
+      for (size_t idx = 0; idx < valuesCount; idx++) {
+        valuesVect.push_back({ std::string(values[idx].value, values[idx].size), values[idx].type });
+      }
+    }
+
+    std::string payload = makeProxyHeader(tcp, src, dst, valuesVect);
+    if (payload.size() > outSize) {
+      return 0;
+    }
+
+    memcpy(out, payload.c_str(), payload.size());
+
+    return payload.size();
+  }
+  catch (const std::exception& e) {
+    vinfolog("Exception in dnsdist_ffi_generate_proxy_protocol_payload: %s", e.what());
+    return 0;
+  }
+  catch (...) {
+    vinfolog("Unhandled exception in dnsdist_ffi_generate_proxy_protocol_payload");
+    return 0;
+  }
+}
+
+size_t dnsdist_ffi_dnsquestion_generate_proxy_protocol_payload(const dnsdist_ffi_dnsquestion_t* dq, const size_t valuesCount, const dnsdist_ffi_proxy_protocol_value* values, void* out, const size_t outSize)
+{
+  std::vector<ProxyProtocolValue> valuesVect;
+  if (valuesCount > 0) {
+    valuesVect.reserve(valuesCount);
+    for (size_t idx = 0; idx < valuesCount; idx++) {
+      valuesVect.push_back({ std::string(values[idx].value, values[idx].size), values[idx].type });
+    }
+  }
+
+  std::string payload = makeProxyHeader(dq->dq->overTCP(), *dq->dq->remote, *dq->dq->local, valuesVect);
+  if (payload.size() > outSize) {
+    return 0;
+  }
+
+  memcpy(out, payload.c_str(), payload.size());
+
+  return payload.size();
 }

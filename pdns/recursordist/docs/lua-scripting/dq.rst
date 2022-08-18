@@ -33,18 +33,14 @@ The DNSQuestion object contains at least the following fields:
 
       :class:`DNSName` of the name this query is for.
 
-  .. attribute:: DNSQuestion.qname
-
-      :class:`DNSName` of the name this query is for.
-
   .. attribute:: DNSQuestion.qtype
 
       Type this query is for as an integer, can be compared against ``pdns.A``, ``pdns.AAAA``.
 
   .. attribute:: DNSQuestion.rcode
 
-      current DNS Result Code, which can be overridden, including to several magical values
-      The rcode can be set to pdns.DROP to drop the query.
+      current DNS Result Code, which can be overridden, including to several magical values.
+      Before 4.4.0, the rcode can be set to ``pdns.DROP`` to drop the query, for later versions refer to :ref:`hook-semantics`.
       Other statuses are normal DNS return codes, like ``pdns.NOERROR``, ``pdns.NXDOMAIN`` etc.
 
   .. attribute:: DNSQuestion.isTcp
@@ -73,6 +69,14 @@ The DNSQuestion object contains at least the following fields:
       - getFakeAAAARecords: Get a fake AAAA record, see :doc:`DNS64 <../dns64>`
       - getFakePTRRecords: Get a fake PTR record, see :doc:`DNS64 <../dns64>`
       - udpQueryResponse: Do a UDP query and call a handler, see :ref:`UDP Query Response <udpqueryresponse>`
+
+  .. attribute:: DNSQuestion.followupName
+
+      see :doc:`DNS64 <../dns64>`
+
+  .. attribute:: DNSQuestion.followupPrefix
+
+      see :doc:`DNS64 <../dns64>`
 
   .. attribute:: DNSQuestion.appliedPolicy
 
@@ -174,7 +178,7 @@ The DNSQuestion object contains at least the following fields:
 
       The result of the DNSSEC validation, accessible from the ``postresolve``, ``nxdomain`` and ``nodata`` hooks.
       Possible states are ``pdns.validationstates.Indeterminate``, ``pdns.validationstates.Bogus``, ``pdns.validationstates.Insecure`` and ``pdns.validationstates.Secure``.
-      The result will always be ``pdns.validationstates.Indeterminate`` is validation is disabled or was not requested.
+      The result will always be ``pdns.validationstates.Indeterminate`` if validation is disabled or was not requested.
 
   .. attribute:: DNSQuestion.detailedValidationState
 
@@ -183,7 +187,9 @@ The DNSQuestion object contains at least the following fields:
       The result of the DNSSEC validation, accessible from the ``postresolve``, ``nxdomain`` and ``nodata`` hooks.
       By contrast with :attr:`validationState <DNSQuestion.validationState>`, there are several Bogus states to be
       able to better understand the reason for a DNSSEC validation failure.
-      Possible states are :
+      
+      Possible states are:
+      
       - ``pdns.validationstates.Indeterminate``
       - ``pdns.validationstates.BogusNoValidDNSKEY``
       - ``pdns.validationstates.BogusInvalidDenial``
@@ -212,6 +218,10 @@ The DNSQuestion object contains at least the following fields:
       .. versionadded:: 4.2.0
 
       Whether the response to this query will be exported to a remote protobuf logger, if one has been configured.
+
+  .. attribute:: DNSQuestion.tag
+
+      The packet-cache tag set via :func:`gettag`, or 0 if it has not been set.
 
   It also supports the following methods:
 
@@ -339,6 +349,11 @@ The DNS header as returned by :meth:`DNSQuestion:getDH()` represents a header of
   .. method:: DNSHeader:getID() -> int
 
       The ID of the query
+
+DNSRecord Object
+================
+
+See :doc:`DNSRecord <dnsrecord>`.
 
 The EDNSOptionView Class
 ========================

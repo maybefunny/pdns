@@ -22,35 +22,43 @@
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
+
 #include "iputils.hh"
-#include <sys/socket.h> 
+
+#include <sys/socket.h>
+#include <boost/format.hpp>
+
+#if HAVE_GETIFADDRS
+#include <ifaddrs.h>
+#endif
 
 /** these functions provide a very lightweight wrapper to the Berkeley sockets API. Errors -> exceptions! */
 
-static void RuntimeError(const boost::format& fmt)
+static void RuntimeError(std::string&& error)
 {
-  throw runtime_error(fmt.str());
+  throw runtime_error(std::move(error));
 }
 
-static void NetworkErr(const boost::format& fmt)
+static void NetworkErr(std::string&& error)
 {
-  throw NetworkError(fmt.str());
+  throw NetworkError(std::move(error));
 }
 
 int SSocket(int family, int type, int flags)
 {
   int ret = socket(family, type, flags);
-  if(ret < 0)
-    RuntimeError(boost::format("creating socket of type %d: %s") % family % stringerror());
+  if (ret < 0) {
+    RuntimeError("creating socket of type " + std::to_string(family) + ": " + stringerror());
+  }
   return ret;
 }
 
 int SConnect(int sockfd, const ComboAddress& remote)
 {
   int ret = connect(sockfd, reinterpret_cast<const struct sockaddr*>(&remote), remote.getSocklen());
-  if(ret < 0) {
+  if (ret < 0) {
     int savederrno = errno;
-    RuntimeError(boost::format("connecting socket to %s: %s") % remote.toStringWithPort() % strerror(savederrno));
+    RuntimeError("connecting socket to " + remote.toStringWithPort() + ": " + stringerror(savederrno));
   }
   return ret;
 }
@@ -74,26 +82,26 @@ int SConnectWithTimeout(int sockfd, const ComboAddress& remote, const struct tim
           savederrno = 0;
           socklen_t errlen = sizeof(savederrno);
           if (getsockopt(sockfd, SOL_SOCKET, SO_ERROR, (void *)&savederrno, &errlen) == 0) {
-            NetworkErr(boost::format("connecting to %s failed: %s") % remote.toStringWithPort() % string(strerror(savederrno)));
+            NetworkErr("connecting to " + remote.toStringWithPort() + " failed: " + stringerror(savederrno));
           }
           else {
-            NetworkErr(boost::format("connecting to %s failed") % remote.toStringWithPort());
+            NetworkErr("connecting to " + remote.toStringWithPort() + " failed");
           }
         }
         if (disconnected) {
-          NetworkErr(boost::format("%s closed the connection") % remote.toStringWithPort());
+          NetworkErr(remote.toStringWithPort() + " closed the connection");
         }
         return 0;
       }
       else if (res == 0) {
-        NetworkErr(boost::format("timeout while connecting to %s") % remote.toStringWithPort());
+        NetworkErr("timeout while connecting to " + remote.toStringWithPort());
       } else if (res < 0) {
         savederrno = errno;
-        NetworkErr(boost::format("waiting to connect to %s: %s") % remote.toStringWithPort() % string(strerror(savederrno)));
+        NetworkErr("waiting to connect to " + remote.toStringWithPort() + ": " + stringerror(savederrno));
       }
     }
     else {
-      NetworkErr(boost::format("connecting to %s: %s") % remote.toStringWithPort() % string(strerror(savederrno)));
+      NetworkErr("connecting to " + remote.toStringWithPort() + ": " + stringerror(savederrno));
     }
   }
 
@@ -103,9 +111,9 @@ int SConnectWithTimeout(int sockfd, const ComboAddress& remote, const struct tim
 int SBind(int sockfd, const ComboAddress& local)
 {
   int ret = bind(sockfd, (struct sockaddr*)&local, local.getSocklen());
-  if(ret < 0) {
+  if (ret < 0) {
     int savederrno = errno;
-    RuntimeError(boost::format("binding socket to %s: %s") % local.toStringWithPort() % strerror(savederrno));
+    RuntimeError("binding socket to " + local.toStringWithPort() + ": " + stringerror(savederrno));
   }
   return ret;
 }
@@ -115,24 +123,27 @@ int SAccept(int sockfd, ComboAddress& remote)
   socklen_t remlen = remote.getSocklen();
 
   int ret = accept(sockfd, (struct sockaddr*)&remote, &remlen);
-  if(ret < 0)
-    RuntimeError(boost::format("accepting new connection on socket: %s") % stringerror());
+  if (ret < 0) {
+    RuntimeError("accepting new connection on socket: " + stringerror());
+  }
   return ret;
 }
 
 int SListen(int sockfd, int limit)
 {
   int ret = listen(sockfd, limit);
-  if(ret < 0)
-    RuntimeError(boost::format("setting socket to listen: %s") % stringerror());
+  if (ret < 0) {
+    RuntimeError("setting socket to listen: " + stringerror());
+  }
   return ret;
 }
 
 int SSetsockopt(int sockfd, int level, int opname, int value)
 {
   int ret = setsockopt(sockfd, level, opname, &value, sizeof(value));
-  if(ret < 0)
-    RuntimeError(boost::format("setsockopt for level %d and opname %d to %d failed: %s") % level % opname % value % stringerror());
+  if (ret < 0) {
+    RuntimeError("setsockopt for level " + std::to_string(level) + " and opname " + std::to_string(opname) + " to " + std::to_string(value) + " failed: " + stringerror());
+  }
   return ret;
 }
 
@@ -203,12 +214,12 @@ bool setReusePort(int sockfd)
   return false;
 }
 
-bool HarvestTimestamp(struct msghdr* msgh, struct timeval* tv) 
+bool HarvestTimestamp(struct msghdr* msgh, struct timeval* tv)
 {
 #ifdef SO_TIMESTAMP
   struct cmsghdr *cmsg;
   for (cmsg = CMSG_FIRSTHDR(msgh); cmsg != nullptr; cmsg = CMSG_NXTHDR(msgh,cmsg)) {
-    if ((cmsg->cmsg_level == SOL_SOCKET) && (cmsg->cmsg_type == SO_TIMESTAMP || cmsg->cmsg_type == SCM_TIMESTAMP) && 
+    if ((cmsg->cmsg_level == SOL_SOCKET) && (cmsg->cmsg_type == SO_TIMESTAMP || cmsg->cmsg_type == SCM_TIMESTAMP) &&
 	CMSG_LEN(sizeof(*tv)) == cmsg->cmsg_len) {
       memcpy(tv, CMSG_DATA(cmsg), sizeof(*tv));
       return true;
@@ -237,7 +248,7 @@ bool HarvestDestinationAddress(const struct msghdr* msgh, ComboAddress* destinat
     if ((cmsg->cmsg_level == IPPROTO_IP) && (cmsg->cmsg_type == IP_RECVDSTADDR)) {
       struct in_addr *i = (struct in_addr *) CMSG_DATA(cmsg);
       destination->sin4.sin_addr = *i;
-      destination->sin4.sin_family = AF_INET;      
+      destination->sin4.sin_family = AF_INET;
       return true;
     }
 #endif
@@ -258,7 +269,7 @@ bool IsAnyAddress(const ComboAddress& addr)
     return addr.sin4.sin_addr.s_addr == 0;
   else if(addr.sin4.sin_family == AF_INET6)
     return !memcmp(&addr.sin6.sin6_addr, &in6addr_any, sizeof(addr.sin6.sin6_addr));
-  
+
   return false;
 }
 int sendOnNBSocket(int fd, const struct msghdr *msgh)
@@ -284,30 +295,6 @@ int sendOnNBSocket(int fd, const struct msghdr *msgh)
   return sendErr;
 }
 
-ssize_t sendfromto(int sock, const void* data, size_t len, int flags, const ComboAddress& from, const ComboAddress& to)
-{
-  struct msghdr msgh;
-  struct iovec iov;
-  cmsgbuf_aligned cbuf;
-
-  /* Set up iov and msgh structures. */
-  memset(&msgh, 0, sizeof(struct msghdr));
-  iov.iov_base = const_cast<void*>(data);
-  iov.iov_len = len;
-  msgh.msg_iov = &iov;
-  msgh.msg_iovlen = 1;
-  msgh.msg_name = (struct sockaddr*)&to;
-  msgh.msg_namelen = to.getSocklen();
-
-  if(from.sin4.sin_family) {
-    addCMsgSrcAddr(&msgh, &cbuf, &from, 0);
-  }
-  else {
-    msgh.msg_control=nullptr;
-  }
-  return sendmsg(sock, &msgh, flags);
-}
-
 // be careful: when using this for receive purposes, make sure addr->sin4.sin_family is set appropriately so getSocklen works!
 // be careful: when using this function for *send* purposes, be sure to set cbufsize to 0!
 // be careful: if you don't call addCMsgSrcAddr after fillMSGHdr, make sure to set msg_control to NULL
@@ -317,7 +304,7 @@ void fillMSGHdr(struct msghdr* msgh, struct iovec* iov, cmsgbuf_aligned* cbuf, s
   iov->iov_len  = datalen;
 
   memset(msgh, 0, sizeof(struct msghdr));
-  
+
   msgh->msg_control = cbuf;
   msgh->msg_controllen = cbufsize;
   msgh->msg_name = addr;
@@ -348,12 +335,12 @@ void ComboAddress::truncate(unsigned int bits) noexcept
   auto tozero= len*8 - bits; // if set to 22, this will clear 1 byte, as it should
 
   memset(start + len - tozero/8, 0, tozero/8); // blot out the whole bytes on the right
-  
+
   auto bitsleft=tozero % 8; // 2 bits left to clear
 
   // a b c d, to truncate to 22 bits, we just zeroed 'd' and need to zero 2 bits from c
   // so and by '11111100', which is ~((1<<2)-1)  = ~3
-  uint8_t* place = start + len - 1 - tozero/8; 
+  uint8_t* place = start + len - 1 - tozero/8;
   *place &= (~((1<<bitsleft)-1));
 }
 
@@ -389,7 +376,9 @@ size_t sendMsgWithOptions(int fd, const char* buffer, size_t len, const ComboAdd
   msgh.msg_flags = 0;
 
   size_t sent = 0;
+#ifdef MSG_FASTOPEN
   bool firstTry = true;
+#endif
 
   do {
 
@@ -410,7 +399,9 @@ size_t sendMsgWithOptions(int fd, const char* buffer, size_t len, const ComboAdd
       }
 
       /* partial write */
+ #ifdef MSG_FASTOPEN
       firstTry = false;
+ #endif
       iov.iov_len -= written;
       iov.iov_base = reinterpret_cast<void*>(reinterpret_cast<char*>(iov.iov_base) + written);
     }
@@ -437,7 +428,7 @@ size_t sendMsgWithOptions(int fd, const char* buffer, size_t len, const ComboAdd
   return 0;
 }
 
-template class NetmaskTree<bool>;
+template class NetmaskTree<bool, Netmask>;
 
 /* requires a non-blocking socket.
    On Linux, we could use MSG_DONTWAIT on a blocking socket
@@ -491,7 +482,7 @@ ComboAddress parseIPAndPort(const std::string& input, uint16_t port)
 {
   if (input[0] == '[') { // case 1
     auto both = splitField(input.substr(1), ']');
-    return ComboAddress(both.first, both.second.empty() ? port : static_cast<uint16_t>(pdns_stou(both.second.substr(1))));
+    return ComboAddress(both.first, both.second.empty() ? port : pdns::checked_stoi<uint16_t>(both.second.substr(1)));
   }
 
   string::size_type count = 0;
@@ -512,10 +503,87 @@ ComboAddress parseIPAndPort(const std::string& input, uint16_t port)
     both.first = input.substr(0, cpos);
     both.second = input.substr(cpos + 1);
 
-    uint16_t newport = static_cast<uint16_t>(pdns_stou(both.second));
+    auto newport = pdns::checked_stoi<uint16_t>(both.second);
     return ComboAddress(both.first, newport);
   }
   default: // case 4
     return ComboAddress(input, port);
   }
+}
+
+void setSocketBuffer(int fd, int optname, uint32_t size)
+{
+  uint32_t psize = 0;
+  socklen_t len = sizeof(psize);
+
+  if (!getsockopt(fd, SOL_SOCKET, optname, &psize, &len) && psize > size) {
+    throw std::runtime_error("Not decreasing socket buffer size from " + std::to_string(psize) + " to " + std::to_string(size));
+  }
+
+  if (setsockopt(fd, SOL_SOCKET, optname, &size, sizeof(size)) < 0) {
+    throw std::runtime_error("Unable to raise socket buffer size to " + std::to_string(size) + ": " + stringerror());
+  }
+}
+
+void setSocketReceiveBuffer(int fd, uint32_t size)
+{
+  setSocketBuffer(fd, SO_RCVBUF, size);
+}
+
+void setSocketSendBuffer(int fd, uint32_t size)
+{
+  setSocketBuffer(fd, SO_SNDBUF, size);
+}
+
+std::set<std::string> getListOfNetworkInterfaces()
+{
+  std::set<std::string> result;
+#if HAVE_GETIFADDRS
+  struct ifaddrs *ifaddr;
+  if (getifaddrs(&ifaddr) == -1) {
+    return result;
+  }
+
+  for (struct ifaddrs *ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
+    if (ifa->ifa_name == nullptr) {
+      continue;
+    }
+    result.insert(ifa->ifa_name);
+  }
+
+  freeifaddrs(ifaddr);
+#endif
+  return result;
+}
+
+std::vector<ComboAddress> getListOfAddressesOfNetworkInterface(const std::string& itf)
+{
+  std::vector<ComboAddress> result;
+#if HAVE_GETIFADDRS
+  struct ifaddrs *ifaddr;
+  if (getifaddrs(&ifaddr) == -1) {
+    return result;
+  }
+
+  for (struct ifaddrs *ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
+    if (ifa->ifa_name == nullptr || strcmp(ifa->ifa_name, itf.c_str()) != 0) {
+      continue;
+    }
+    if (ifa->ifa_addr == nullptr || (ifa->ifa_addr->sa_family != AF_INET && ifa->ifa_addr->sa_family != AF_INET6)) {
+      continue;
+    }
+    ComboAddress addr;
+    try {
+      addr.setSockaddr(ifa->ifa_addr, ifa->ifa_addr->sa_family == AF_INET ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6));
+    }
+    catch (...) {
+      continue;
+    }
+
+    result.push_back(addr);
+  }
+
+  freeifaddrs(ifaddr);
+#endif
+  return result;
 }

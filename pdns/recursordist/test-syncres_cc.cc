@@ -14,11 +14,13 @@ GlobalStateHolder<SuffixMatchNode> g_xdnssec;
 GlobalStateHolder<SuffixMatchNode> g_dontThrottleNames;
 GlobalStateHolder<NetmaskGroup> g_dontThrottleNetmasks;
 GlobalStateHolder<SuffixMatchNode> g_DoTToAuthNames;
-std::unique_ptr<MemRecursorCache> g_recCache{nullptr};
-std::unique_ptr<NegCache> g_negCache{nullptr};
-unsigned int g_numThreads = 1;
+std::unique_ptr<MemRecursorCache> g_recCache;
+std::unique_ptr<NegCache> g_negCache;
 bool g_lowercaseOutgoing = false;
-
+#if 0
+pdns::TaskQueue g_test_tasks;
+pdns::TaskQueue g_resolve_tasks;
+#endif
 /* Fake some required functions we didn't want the trouble to
    link with */
 ArgvMap& arg()
@@ -27,7 +29,7 @@ ArgvMap& arg()
   return theArg;
 }
 
-void primeRootNSZones(bool, unsigned int)
+void primeRootNSZones(DNSSECMode, unsigned int)
 {
 }
 
@@ -39,7 +41,7 @@ void BaseLua4::getFeatures(Features&)
 {
 }
 
-bool RecursorLua4::preoutquery(const ComboAddress& ns, const ComboAddress& requestor, const DNSName& query, const QType& qtype, bool isTcp, vector<DNSRecord>& res, int& ret) const
+bool RecursorLua4::preoutquery(const ComboAddress& ns, const ComboAddress& requestor, const DNSName& query, const QType& qtype, bool isTcp, vector<DNSRecord>& res, int& ret, RecEventTrace& et) const
 {
   return false;
 }
@@ -82,9 +84,9 @@ bool primeHints(time_t now)
 {
   vector<DNSRecord> nsset;
   if (!g_recCache)
-    g_recCache = std::unique_ptr<MemRecursorCache>(new MemRecursorCache());
+    g_recCache = std::make_unique<MemRecursorCache>();
   if (!g_negCache)
-    g_negCache = std::unique_ptr<NegCache>(new NegCache());
+    g_negCache = std::make_unique<NegCache>();
 
   DNSRecord arr, aaaarr, nsrr;
   nsrr.d_name = g_rootdnsname;
@@ -142,8 +144,8 @@ void initSR(bool debug)
     g_log.toConsole(Logger::Error);
   }
 
-  g_recCache = std::unique_ptr<MemRecursorCache>(new MemRecursorCache());
-  g_negCache = std::unique_ptr<NegCache>(new NegCache());
+  g_recCache = std::make_unique<MemRecursorCache>();
+  g_negCache = std::make_unique<NegCache>();
 
   SyncRes::s_maxqperq = 50;
   SyncRes::s_maxnsaddressqperq = 10;
@@ -179,6 +181,7 @@ void initSR(bool debug)
   SyncRes::s_nonresolvingnsmaxfails = 0;
   SyncRes::s_nonresolvingnsthrottletime = 0;
   SyncRes::s_refresh_ttlperc = 0;
+  SyncRes::s_save_parent_ns_set = true;
 
   SyncRes::clearNSSpeeds();
   BOOST_CHECK_EQUAL(SyncRes::getNSSpeedsSize(), 0U);
@@ -190,6 +193,8 @@ void initSR(bool debug)
   BOOST_CHECK_EQUAL(SyncRes::getFailedServersSize(), 0U);
   SyncRes::clearNonResolvingNS();
   BOOST_CHECK_EQUAL(SyncRes::getNonResolvingNSSize(), 0U);
+  SyncRes::clearSaveParentsNSSets();
+  BOOST_CHECK_EQUAL(SyncRes::getSaveParentsNSSetsSize(), 0U);
 
   SyncRes::clearECSStats();
 
@@ -208,6 +213,7 @@ void initSR(bool debug)
   g_maxNSEC3Iterations = 2500;
 
   g_aggressiveNSECCache.reset();
+  taskQueueClear();
 
   ::arg().set("version-string", "string reported on version.pdns or version.bind") = "PowerDNS Unit Tests";
   ::arg().set("rng") = "auto";
@@ -227,7 +233,7 @@ void initSR(std::unique_ptr<SyncRes>& sr, bool dnssec, bool debug, time_t fakeNo
 
   initSR(debug);
 
-  sr = std::unique_ptr<SyncRes>(new SyncRes(now));
+  sr = std::make_unique<SyncRes>(now);
   sr->setDoEDNS0(true);
   if (dnssec) {
     sr->setDoDNSSEC(dnssec);
@@ -431,6 +437,17 @@ void addNSEC3UnhashedRecordToLW(const DNSName& domain, const DNSName& zone, cons
   addNSEC3RecordToLW(DNSName(toBase32Hex(hashed)) + zone, next, salt, iterations, types, ttl, records, optOut);
 }
 
+/* Proves a NODATA (name exists, type does not) but the next owner name is right behind, so it should not prove anything else unless we are very unlucky */
+void addNSEC3NoDataNarrowRecordToLW(const DNSName& domain, const DNSName& zone, const std::set<uint16_t>& types, uint32_t ttl, std::vector<DNSRecord>& records, unsigned int iterations, bool optOut)
+{
+  static const std::string salt = "deadbeef";
+  std::string hashed = hashQNameWithSalt(salt, iterations, domain);
+  std::string hashedNext(hashed);
+  incrementHash(hashedNext);
+
+  addNSEC3RecordToLW(DNSName(toBase32Hex(hashed)) + zone, hashedNext, salt, iterations, types, ttl, records, optOut);
+}
+
 void addNSEC3NarrowRecordToLW(const DNSName& domain, const DNSName& zone, const std::set<uint16_t>& types, uint32_t ttl, std::vector<DNSRecord>& records, unsigned int iterations, bool optOut)
 {
   static const std::string salt = "deadbeef";
@@ -540,11 +557,4 @@ LWResult::Result basicRecordsForQnameMinimization(LWResult* res, const DNSName& 
     return LWResult::Result::Success;
   }
   return LWResult::Result::Timeout;
-}
-
-pdns::TaskQueue g_test_tasks;
-
-void pushAlmostExpiredTask(const DNSName& qname, uint16_t qtype, time_t deadline)
-{
-  g_test_tasks.push({qname, qtype, deadline, true, nullptr});
 }

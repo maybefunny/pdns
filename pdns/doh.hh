@@ -20,6 +20,9 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 #pragma once
+
+#include <unordered_map>
+
 #include "iputils.hh"
 #include "libssl.hh"
 #include "noinitvector.hh"
@@ -30,7 +33,7 @@ struct DOHServerConfig;
 class DOHResponseMapEntry
 {
 public:
-  DOHResponseMapEntry(const std::string& regex, uint16_t status, const PacketBuffer& content, const boost::optional<std::vector<std::pair<std::string, std::string>>>& headers): d_regex(regex), d_customHeaders(headers), d_content(content), d_status(status)
+  DOHResponseMapEntry(const std::string& regex, uint16_t status, const PacketBuffer& content, const boost::optional<std::unordered_map<std::string, std::string>>& headers): d_regex(regex), d_customHeaders(headers), d_content(content), d_status(status)
   {
     if (status >= 400 && !d_content.empty() && d_content.at(d_content.size() -1) != 0) {
       // we need to make sure it's null-terminated
@@ -53,14 +56,14 @@ public:
     return d_content;
   }
 
-  const boost::optional<std::vector<std::pair<std::string, std::string>>>& getHeaders() const
+  const boost::optional<std::unordered_map<std::string, std::string>>& getHeaders() const
   {
     return d_customHeaders;
   }
 
 private:
   Regex d_regex;
-  boost::optional<std::vector<std::pair<std::string, std::string>>> d_customHeaders;
+  boost::optional<std::unordered_map<std::string, std::string>> d_customHeaders;
   PacketBuffer d_content;
   uint16_t d_status;
 };
@@ -76,7 +79,7 @@ struct DOHFrontend
   TLSConfig d_tlsConfig;
   TLSErrorCounters d_tlsCounters;
   std::string d_serverTokens{"h2o/dnsdist"};
-  std::vector<std::pair<std::string, std::string>> d_customResponseHeaders;
+  std::unordered_map<std::string, std::string> d_customResponseHeaders;
   ComboAddress d_local;
 
   uint32_t d_idleTimeout{30};             // HTTP idle timeout in seconds
@@ -119,6 +122,11 @@ struct DOHFrontend
   time_t getTicketsKeyRotationDelay() const
   {
     return d_tlsConfig.d_ticketsKeyRotationDelay;
+  }
+
+  bool isHTTPS() const
+  {
+    return !d_tlsConfig.d_certKeyPairs.empty();
   }
 
 #ifndef HAVE_DNS_OVER_HTTPS
@@ -168,17 +176,24 @@ struct DOHFrontend
 #ifndef HAVE_DNS_OVER_HTTPS
 struct DOHUnit
 {
+  static void release(DOHUnit* ptr)
+  {
+  }
 };
 
 #else /* HAVE_DNS_OVER_HTTPS */
 #include <unordered_map>
 
+#include "dnsdist-idstate.hh"
+
 struct st_h2o_req_t;
+struct DownstreamState;
 
 struct DOHUnit
 {
   DOHUnit()
   {
+    ids.ednsAdded = false;
   }
   DOHUnit(const DOHUnit&) = delete;
   DOHUnit& operator=(const DOHUnit&) = delete;
@@ -199,21 +214,29 @@ struct DOHUnit
     }
   }
 
-  std::vector<std::pair<std::string, std::string>> headers;
-  PacketBuffer query;
-  PacketBuffer response;
+  static void release(DOHUnit* ptr)
+  {
+    if (ptr) {
+      ptr->release();
+    }
+  }
+
+  IDState ids;
   std::string sni;
   std::string path;
   std::string scheme;
   std::string host;
-  ComboAddress remote;
-  ComboAddress dest;
+  std::string contentType;
+  std::unordered_map<std::string, std::string> headers;
+  PacketBuffer query;
+  PacketBuffer response;
+  std::shared_ptr<DownstreamState> downstream{nullptr};
   st_h2o_req_t* req{nullptr};
   DOHUnit** self{nullptr};
   DOHServerConfig* dsc{nullptr};
-  std::string contentType;
   std::atomic<uint64_t> d_refcnt{1};
   size_t query_at{0};
+  size_t proxyProtocolPayloadSize{0};
   int rsock{-1};
   /* the status_code is set from
      processDOHQuery() (which is executed in
@@ -223,7 +246,10 @@ struct DOHUnit
      the main DoH thread.
   */
   uint16_t status_code{200};
-  bool ednsAdded{false};
+  /* whether the query was re-sent to the backend over
+     TCP after receiving a truncated answer over UDP */
+  bool tcp{false};
+  bool truncated{false};
 
   std::string getHTTPPath() const;
   std::string getHTTPHost() const;
@@ -233,6 +259,10 @@ struct DOHUnit
   void setHTTPResponse(uint16_t statusCode, PacketBuffer&& body, const std::string& contentType="");
 };
 
+void handleUDPResponseForDoH(std::unique_ptr<DOHUnit, void(*)(DOHUnit*)>&&, PacketBuffer&& response, IDState&& state);
+
 #endif /* HAVE_DNS_OVER_HTTPS  */
 
-void handleDOHTimeout(DOHUnit* oldDU);
+using DOHUnitUniquePtr = std::unique_ptr<DOHUnit, void(*)(DOHUnit*)>;
+
+void handleDOHTimeout(DOHUnitUniquePtr&& oldDU);

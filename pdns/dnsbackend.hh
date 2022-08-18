@@ -42,6 +42,8 @@ class DNSPacket;
 #include "dnsname.hh"
 #include "dnsrecords.hh"
 #include "iputils.hh"
+#include "sha.hh"
+#include "auth-catalogzone.hh"
 
 class DNSBackend;  
 struct DomainInfo
@@ -49,7 +51,9 @@ struct DomainInfo
   DomainInfo() : last_check(0), backend(nullptr), id(0), notified_serial(0), receivedNotify(false), serial(0), kind(DomainInfo::Native) {}
 
   DNSName zone;
+  DNSName catalog;
   time_t last_check;
+  string options;
   string account;
   vector<ComboAddress> masters; 
   DNSBackend *backend;
@@ -60,12 +64,22 @@ struct DomainInfo
   bool receivedNotify;
 
   uint32_t serial;
-  enum DomainKind : uint8_t { Master, Slave, Native } kind;
-  
+
   bool operator<(const DomainInfo& rhs) const
   {
     return zone < rhs.zone;
   }
+
+  // Do not reorder (lmdbbackend)!!! One exception 'All' is always last.
+  enum DomainKind : uint8_t
+  {
+    Master,
+    Slave,
+    Native,
+    Producer,
+    Consumer,
+    All
+  } kind;
 
   const char *getKindString() const
   {
@@ -74,7 +88,7 @@ struct DomainInfo
 
   static const char *getKindString(enum DomainKind kind)
   {
-    const char *kinds[]={"Master", "Slave", "Native"};
+    const char* kinds[] = {"Master", "Slave", "Native", "Producer", "Consumer", "All"};
     return kinds[kind];
   }
 
@@ -82,11 +96,19 @@ struct DomainInfo
   {
     if (pdns_iequals(kind, "SECONDARY") || pdns_iequals(kind, "SLAVE"))
       return DomainInfo::Slave;
-    else if (pdns_iequals(kind, "PRIMARY") || pdns_iequals(kind, "MASTER"))
+    if (pdns_iequals(kind, "PRIMARY") || pdns_iequals(kind, "MASTER"))
       return DomainInfo::Master;
-    else
-      return DomainInfo::Native;
+    if (pdns_iequals(kind, "PRODUCER"))
+      return DomainInfo::Producer;
+    if (pdns_iequals(kind, "CONSUMER"))
+      return DomainInfo::Consumer;
+    // No "ALL" here please. Yes, I really mean it...
+    return DomainInfo::Native;
   }
+
+  bool isPrimaryType() const { return (kind == DomainInfo::Master || kind == DomainInfo::Producer); }
+  bool isSecondaryType() const { return (kind == DomainInfo::Slave || kind == DomainInfo::Consumer); }
+  bool isCatalogType() const { return (kind == DomainInfo::Producer || kind == DomainInfo::Consumer); }
 
   bool isMaster(const ComboAddress& ip) const
   {
@@ -103,6 +125,17 @@ struct TSIGKey {
    DNSName name;
    DNSName algorithm;
    std::string key;
+};
+
+struct AutoPrimary {
+   AutoPrimary(const string& new_ip, const string& new_nameserver, const string& new_account) {
+      this->ip = new_ip;
+      this->nameserver = new_nameserver;
+      this->account = new_account;
+   };
+   std::string ip;
+   std::string nameserver;
+   std::string account;
 };
 
 class DNSPacket;
@@ -173,7 +206,7 @@ public:
     return setDomainMetadata(name, kind, meta);
   }
 
-  virtual void getAllDomains(vector<DomainInfo>* domains, bool include_disabled = false);
+  virtual void getAllDomains(vector<DomainInfo>* domains, bool getSerial, bool include_disabled);
 
   /** Determines if we are authoritative for a zone, and at what level */
   virtual bool getAuth(const DNSName &target, SOAData *sd);
@@ -194,10 +227,10 @@ public:
   virtual bool publishDomainKey(const DNSName& name, unsigned int id) { return false; }
   virtual bool unpublishDomainKey(const DNSName& name, unsigned int id) { return false; }
 
-  virtual bool getTSIGKey(const DNSName& name, DNSName* algorithm, string* content) { return false; }
   virtual bool setTSIGKey(const DNSName& name, const DNSName& algorithm, const string& content) { return false; }
+  virtual bool getTSIGKey(const DNSName& name, DNSName& algorithm, string& content) { return false; }
+  virtual bool getTSIGKeys(std::vector<struct TSIGKey>& keys) { return false; }
   virtual bool deleteTSIGKey(const DNSName& name) { return false; }
-  virtual bool getTSIGKeys(std::vector< struct TSIGKey > &keys) { return false; }
 
   virtual bool getBeforeAndAfterNamesAbsolute(uint32_t id, const DNSName& qname, DNSName& unhashed, DNSName& before, DNSName& after)
   {
@@ -307,8 +340,14 @@ public:
   }
 
   //! get list of domains that have been changed since their last notification to slaves
-  virtual void getUpdatedMasters(vector<DomainInfo>* domains)
+  virtual void getUpdatedMasters(vector<DomainInfo>& domains, std::unordered_set<DNSName>& catalogs, CatalogHashMap& catalogHashes)
   {
+  }
+
+  //! get list of all members in a catalog
+  virtual bool getCatalogMembers(const DNSName& catalog, vector<CatalogInfo>& members, CatalogInfo::CatalogType type)
+  {
+    return false;
   }
 
   //! Called by PowerDNS to inform a backend that a domain need to be checked for freshness
@@ -338,6 +377,18 @@ public:
     return false;
   }
 
+  //! Called when the options of a domain should be changed
+  virtual bool setOptions(const DNSName& domain, const string& options)
+  {
+    return false;
+  }
+
+  //! Called when the catalog of a domain should be changed
+  virtual bool setCatalog(const DNSName& domain, const DNSName& catalog)
+  {
+    return false;
+  }
+
   //! Called when the Account of a domain should be changed
   virtual bool setAccount(const DNSName &domain, const string &account)
   {
@@ -348,9 +399,21 @@ public:
   void setArgPrefix(const string &prefix);
 
   //! Add an entry for a super master
-  virtual bool superMasterAdd(const string &ip, const string &nameserver, const string &account) 
+  virtual bool superMasterAdd(const struct AutoPrimary& primary)
   {
     return false; 
+  }
+
+  //! Remove an entry for a super master
+  virtual bool autoPrimaryRemove(const struct AutoPrimary& primary)
+  {
+    return false;
+  }
+
+  //! List all SuperMasters, returns false if feature not supported.
+  virtual bool autoPrimariesList(std::vector<AutoPrimary>& primaries)
+  {
+    return false;
   }
 
   //! determine if ip is a supermaster or a domain

@@ -25,9 +25,13 @@
 #include <list>
 #include <boost/utility.hpp>
 #include <yahttp/yahttp.hpp>
+
 #include "json11.hpp"
+
+#include "credentials.hh"
 #include "namespaces.hh"
 #include "sstuff.hh"
+#include "logging.hh"
 
 class HttpRequest : public YaHTTP::Request {
 public:
@@ -42,8 +46,17 @@ public:
   json11::Json json();
 
   // checks password _only_.
-  bool compareAuthorization(const string &expected_password);
-  bool compareHeader(const string &header_name, const string &expected_value);
+  bool compareAuthorization(const CredentialsHolder& expectedCredentials) const;
+  bool compareHeader(const string &header_name, const CredentialsHolder& expectedCredentials) const;
+  bool compareHeader(const string &header_name, const string &expected_value) const;
+
+#ifdef RECURSOR
+  void setSLog(Logr::log_t log)
+  {
+    d_slog = log;
+  }
+  std::shared_ptr<Logr::Logger> d_slog;
+#endif
 };
 
 class HttpResponse: public YaHTTP::Response {
@@ -57,6 +70,14 @@ public:
   void setJsonBody(const json11::Json& document);
   void setErrorResult(const std::string& message, const int status);
   void setSuccessResult(const std::string& message, const int status = 200);
+
+#ifdef RECURSOR
+  void setSLog(Logr::log_t log)
+  {
+    d_slog = log;
+  }
+  std::shared_ptr<Logr::Logger> d_slog;
+#endif
 };
 
 
@@ -159,12 +180,29 @@ public:
   WebServer(string listenaddress, int port);
   virtual ~WebServer() { };
 
-  void setApiKey(const string &apikey) {
-    d_apikey = apikey;
+#ifdef RECURSOR
+  void setSLog(Logr::log_t log)
+  {
+    d_slog = log;
+  }
+#endif
+
+  void setApiKey(const string &apikey, bool hashPlaintext) {
+    if (!apikey.empty()) {
+      d_apikey = make_unique<CredentialsHolder>(std::string(apikey), hashPlaintext);
+    }
+    else {
+      d_apikey.reset();
+    }
   }
 
-  void setPassword(const string &password) {
-    d_webserverPassword = password;
+  void setPassword(const string &password, bool hashPlaintext) {
+    if (!password.empty()) {
+      d_webserverPassword = make_unique<CredentialsHolder>(std::string(password), hashPlaintext);
+    }
+    else {
+      d_webserverPassword.reset();
+    }
   }
 
   void setMaxBodySize(ssize_t s) { // in megabytes
@@ -181,7 +219,7 @@ public:
   void serveConnection(const std::shared_ptr<Socket>& client) const;
   void handleRequest(HttpRequest& request, HttpResponse& resp) const;
 
-  typedef boost::function<void(HttpRequest* req, HttpResponse* resp)> HandlerFunction;
+  typedef std::function<void(HttpRequest* req, HttpResponse* resp)> HandlerFunction;
   void registerApiHandler(const string& url, const HandlerFunction& handler, bool allowPassword=false);
   void registerWebHandler(const string& url, const HandlerFunction& handler);
 
@@ -218,6 +256,10 @@ public:
     return d_loglevel;
   };
 
+#ifdef RECURSOR
+  std::shared_ptr<Logr::Logger> d_slog;
+#endif
+
 protected:
   void registerBareHandler(const string& url, const HandlerFunction& handler);
   void logRequest(const HttpRequest& req, const ComboAddress& remote) const;
@@ -227,15 +269,15 @@ protected:
     return std::make_shared<Server>(d_listenaddress, d_port);
   }
 
+  void apiWrapper(const WebServer::HandlerFunction& handler, HttpRequest* req, HttpResponse* resp, bool allowPassword);
+  void webWrapper(const WebServer::HandlerFunction& handler, HttpRequest* req, HttpResponse* resp);
+
   string d_listenaddress;
   int d_port;
-  string d_password;
   std::shared_ptr<Server> d_server;
 
-  std::string d_apikey;
-  void apiWrapper(const WebServer::HandlerFunction& handler, HttpRequest* req, HttpResponse* resp, bool allowPassword);
-  std::string d_webserverPassword;
-  void webWrapper(const WebServer::HandlerFunction& handler, HttpRequest* req, HttpResponse* resp);
+  std::unique_ptr<CredentialsHolder> d_apikey{nullptr};
+  std::unique_ptr<CredentialsHolder> d_webserverPassword{nullptr};
 
   ssize_t d_maxbodysize; // in bytes
 

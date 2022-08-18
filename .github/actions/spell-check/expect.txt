@@ -31,6 +31,7 @@ Aki
 Alenichev
 alexa
 algo
+algoroll
 aliceblue
 allocs
 Altpeter
@@ -77,6 +78,7 @@ Atomia
 aton
 attr
 atype
+authanswers
 AUTHIP
 Authoritativedoc
 auths
@@ -216,6 +218,7 @@ certusage
 cfea
 CFLAGS
 cgi
+CGNAT
 changelog
 changeme
 changeset
@@ -233,6 +236,7 @@ chroot
 chrooting
 CIDR
 classmethod
+clientanswers
 Cloos
 closesocket
 clusions
@@ -293,11 +297,13 @@ Cryptoki
 cryptopp
 cryptoshop
 css
+csum
 csv
 csync
 ctime
 ctor
 ctx
+custommetrics
 cve
 cvename
 cvs
@@ -341,6 +347,7 @@ dedup
 defcontent
 defpol
 defttl
+Dehaine
 DENIC
 deref
 descclassname
@@ -362,6 +369,7 @@ DIGESTALGOS
 Digitalus
 dijk
 dilinger
+Dimitrios
 Directi
 Disqus
 distro
@@ -389,6 +397,7 @@ dnsdistdoc
 dnsdomain
 dnsext
 dnsgram
+dnsheader
 dnskey
 dnsmessage
 dnsname
@@ -410,6 +419,7 @@ dnstcpbench
 dnstree
 dnsttl
 dnsupdate
+dnsviz
 dnswasher
 dnszone
 dnt
@@ -462,6 +472,7 @@ ecs
 ECSDA
 ecswho
 edb
+EDE
 editline
 edns
 ednsbufsiz
@@ -515,6 +526,7 @@ Faerch
 faf
 failedservers
 failover
+farsightsec
 favicon
 FBAE
 fbe
@@ -560,6 +572,7 @@ frontend
 fstrm
 fullname
 fulltoc
+fullycapable
 func
 Furnell
 Fusl
@@ -591,6 +604,7 @@ getdomaininfo
 getdomainkeys
 getdomainmetadata
 gethostname
+getifaddrs
 getlocaladdress
 getn
 getrandom
@@ -682,6 +696,7 @@ hmac
 Hmi
 Hoentjen
 Hofstaedtler
+Holger
 homepage
 Hooimeijer
 hostmaster
@@ -712,6 +727,7 @@ iers
 ietf
 ifdef
 ifportup
+ifurlextup
 ifurlup
 ihsinme
 IJajghd
@@ -732,6 +748,7 @@ Inno
 innodb
 inode
 installable
+internic
 interop
 interoperability
 interoperation
@@ -952,6 +969,7 @@ mariadb
 Markmann
 Massar
 matchtype
+Mavrommatis
 maxdepth
 MAXINT
 maxlistdepth
@@ -1067,6 +1085,7 @@ Neue
 Neuf
 newcontent
 nextval
+nghttp
 nginx
 nic
 nimber
@@ -1074,6 +1093,7 @@ Nixu
 nkey
 nmg
 Nncqx
+NNNN
 noaction
 noad
 noall
@@ -1155,6 +1175,7 @@ openssl
 opensuse
 openwall
 Opmeer
+OPNUM
 optcode
 Opteron
 optmem
@@ -1190,6 +1211,7 @@ pathconfig
 pathto
 pawal
 Pbackend
+PCache
 pcap
 PCAPFILE
 pdf
@@ -1220,7 +1242,9 @@ phishing
 phonedph
 php
 pickclosest
+pickhashed
 pickrandom
+pickrandomsample
 pickwhashed
 pickwrandom
 pid
@@ -1283,6 +1307,7 @@ progid
 protobuf
 protozero
 providername
+proxymapping
 proxyprotocol
 proxyprotocolvalues
 pseudonymize
@@ -1398,6 +1423,7 @@ rightsidebar
 Rijsdijk
 ringbuffer
 rkey
+rmem
 rname
 rng
 rocommunity
@@ -1448,6 +1474,7 @@ scopebits
 scopemask
 scriptable
 scriptlets
+scrypt
 sdb
 sdfoijdfio
 sdig
@@ -1479,6 +1506,7 @@ settting
 setuptools
 setvariable
 Sgs
+Shabanov
 Shafir
 shantikulkarni
 shinsterneck
@@ -1508,6 +1536,7 @@ sigs
 SIGUSR
 singlethreaded
 Sipek
+siphash
 sizeof
 Sjoerd
 slapd
@@ -1569,6 +1598,7 @@ srv
 sshfp
 ssi
 ssl
+SSLKEYLOGFILE
 sslmode
 sslrootcert
 SSQ
@@ -1664,6 +1694,7 @@ Thessalonikefs
 Thiago
 thinko
 Thomassen
+threadmessage
 threadsafe
 throttlemap
 thrysoee
@@ -1745,6 +1776,7 @@ unitialized
 unixodbc
 unixtime
 unparseable
+UNPRIV
 Unprocessable
 unpublish
 unpublishdomainkey
@@ -1815,6 +1847,7 @@ webpassword
 webserver
 website
 Webspider
+Wegener
 weightparams
 Weimer
 Welzel
@@ -1840,6 +1873,7 @@ Winfried
 wireformat
 wirelength
 Wisiol
+wmem
 Wmissing
 Wojas
 workaround
@@ -1859,8 +1893,10 @@ Wzs
 Xander
 xchacha
 xdb
+XDP
 Xek
 Xeon
+XForwarded
 xfr
 xhtml
 xml
@@ -1885,6 +1921,7 @@ yubikey
 YYYYMMD
 YYYYMMDD
 YYYYMMDDSS
+Zash
 Zealey
 zeha
 Zengers
@@ -1894,6 +1931,7 @@ zilopbg
 Zmd
 zonecryptokey
 zonefile
+zonemd
 zonemetadata
 zonename
 zoneparser
@@ -1901,6 +1939,7 @@ zonetransfer
 Zonneveld
 zsk
 zskroll
+ztc
 Zumstrull
 Zwane
 zzyzz

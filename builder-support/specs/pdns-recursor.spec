@@ -9,7 +9,11 @@ Source0: %{name}-%{getenv:BUILDER_VERSION}.tar.bz2
 
 Provides: powerdns-recursor = %{version}-%{release}
 
+%if 0%{?rhel} < 8
+BuildRequires: boost169-devel
+%else
 BuildRequires: boost-devel
+%endif
 BuildRequires: libcap-devel
 BuildRequires: systemd
 BuildRequires: systemd-devel
@@ -17,6 +21,7 @@ BuildRequires: openssl-devel
 BuildRequires: net-snmp-devel
 BuildRequires: libsodium-devel
 BuildRequires: fstrm-devel
+BuildRequires: libcurl-devel
 
 %ifarch aarch64
 BuildRequires: lua-devel
@@ -42,6 +47,11 @@ package if you need a dns cache for your network.
 %autosetup -p1 -n %{name}-%{getenv:BUILDER_VERSION} 
 
 %build
+%if 0%{?rhel} < 8
+export CPPFLAGS=-I/usr/include/boost169
+export LDFLAGS=-L/usr/lib64/boost169
+%endif
+
 %configure \
     --enable-option-checking=fatal \
     --sysconfdir=%{_sysconfdir}/%{name} \
@@ -71,6 +81,14 @@ sed -i \
     -e 's/# setuid=/setuid=pdns-recursor/' \
     -e 's/# setgid=/setgid=pdns-recursor/' \
     %{buildroot}%{_sysconfdir}/%{name}/recursor.conf
+
+# The EL7 and 8 systemd actually supports %t, but its version number is older than that, so we do use seperate runtime dirs, but don't rely on RUNTIME_DIRECTORY
+%if 0%{?rhel} < 9
+sed -e 's!/pdns_recursor!& --socket-dir=%t/pdns-recursor!' -i %{buildroot}/%{_unitdir}/pdns-recursor.service
+%if 0%{?rhel} < 8
+sed -e 's!/pdns_recursor!& --socket-dir=%t/pdns-recursor-%i!' -e 's!RuntimeDirectory=pdns-recursor!&-%i!' -i %{buildroot}/%{_unitdir}/pdns-recursor@.service
+%endif
+%endif
 
 %pre
 getent group pdns-recursor > /dev/null || groupadd -r pdns-recursor

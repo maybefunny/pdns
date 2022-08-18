@@ -33,7 +33,6 @@
 #include "arguments.hh"
 #include "bindparserclasses.hh"
 #include "statbag.hh"
-#include <boost/function.hpp>
 #include "dnsrecords.hh"
 #include "misc.hh"
 #include "dns.hh"
@@ -249,6 +248,7 @@ int main( int argc, char* argv[] )
                 args.set( "domainid", "Domain ID of the first domain found (incremented afterwards)" ) = "1";
                 args.set( "metadata-dn", "DN under which to store the domain metadata" ) = "";
                 args.set( "max-generate-steps", "Maximum number of $GENERATE steps when loading a zone from a file")="0";
+                args.set( "max-include-depth", "Maximum nested $INCLUDE depth when loading a zone from a file")="20";
 
                 args.parse( argc, argv );
 
@@ -273,7 +273,7 @@ int main( int argc, char* argv[] )
 
                 g_basedn = args["basedn"];
                 g_dnsttl = args.mustDo( "dnsttl" );
-                typedef boost::function<void(unsigned int, const DNSName &, const string &, const string &, int)> callback_t;
+                typedef std::function<void(unsigned int, const DNSName &, const string &, const string &, int)> callback_t;
                 callback_t callback = callback_simple;
                 if( args["layout"] == "tree" )
                 {
@@ -293,7 +293,7 @@ int main( int argc, char* argv[] )
                 }
 
                 if ( !args["domainid"].empty() )
-                        g_domainid = pdns_stou( args["domainid"] );
+                        pdns::checked_stoi_into(g_domainid, args["domainid"]);
                 else
                         g_domainid = 1;
 
@@ -318,6 +318,7 @@ int main( int argc, char* argv[] )
                                                 g_zonename = i.name;
                                                 ZoneParserTNG zpt(i.filename, i.name, BP.getDirectory());
                                                 zpt.setMaxGenerateSteps(args.asNum("max-generate-steps"));
+                                                zpt.setMaxIncludes(args.asNum("max-include-depth"));
                                                 DNSResourceRecord rr;
                                                 while(zpt.get(rr)) {
                                                         callback(g_domainid, rr.qname, rr.qtype.toString(), encode_non_ascii(rr.content), rr.ttl);

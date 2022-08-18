@@ -27,7 +27,6 @@
 #include <boost/multi_index_container.hpp>
 #include <boost/multi_index/hashed_index.hpp>
 #include <boost/multi_index/ordered_index.hpp>
-#include <boost/tuple/tuple_comparison.hpp>
 #include <boost/multi_index/key_extractors.hpp>
 #include <boost/multi_index/sequenced_index.hpp>
 #include "dnssecinfra.hh"
@@ -296,11 +295,9 @@ private:
 
   void cleanup();
 
-  static keycache_t s_keycache;
-  static metacache_t s_metacache;
+  static SharedLockGuarded<keycache_t> s_keycache;
+  static SharedLockGuarded<metacache_t> s_metacache;
   static int64_t s_metaCacheCleanActions;
-  static ReadWriteLock s_metacachelock;
-  static ReadWriteLock s_keycachelock;
   static AtomicCounter s_ops;
   static time_t s_last_prune;
   static size_t s_maxEntries;

@@ -30,11 +30,8 @@
 #include <bitset>
 #include "pdnsexception.hh"
 #include "misc.hh"
-#include <sys/socket.h>
 #include <netdb.h>
 #include <sstream>
-#include <boost/tuple/tuple.hpp>
-#include <boost/tuple/tuple_comparison.hpp>
 
 #include "namespaces.hh"
 
@@ -92,7 +89,7 @@ union ComboAddress {
 
   bool operator==(const ComboAddress& rhs) const
   {
-    if(boost::tie(sin4.sin_family, sin4.sin_port) != boost::tie(rhs.sin4.sin_family, rhs.sin4.sin_port))
+    if(std::tie(sin4.sin_family, sin4.sin_port) != std::tie(rhs.sin4.sin_family, rhs.sin4.sin_port))
       return false;
     if(sin4.sin_family == AF_INET)
       return sin4.sin_addr.s_addr == rhs.sin4.sin_addr.s_addr;
@@ -110,9 +107,9 @@ union ComboAddress {
     if(sin4.sin_family == 0) {
       return false;
     }
-    if(boost::tie(sin4.sin_family, sin4.sin_port) < boost::tie(rhs.sin4.sin_family, rhs.sin4.sin_port))
+    if(std::tie(sin4.sin_family, sin4.sin_port) < std::tie(rhs.sin4.sin_family, rhs.sin4.sin_port))
       return true;
-    if(boost::tie(sin4.sin_family, sin4.sin_port) > boost::tie(rhs.sin4.sin_family, rhs.sin4.sin_port))
+    if(std::tie(sin4.sin_family, sin4.sin_port) > std::tie(rhs.sin4.sin_family, rhs.sin4.sin_port))
       return false;
 
     if(sin4.sin_family == AF_INET)
@@ -130,21 +127,21 @@ union ComboAddress {
   {
     uint32_t operator()(const ComboAddress& ca) const
     {
-      const unsigned char* start;
-      int len;
-      if(ca.sin4.sin_family == AF_INET) {
-        start =(const unsigned char*)&ca.sin4.sin_addr.s_addr;
-        len=4;
+      const unsigned char* start = nullptr;
+      uint32_t len = 0;
+      if (ca.sin4.sin_family == AF_INET) {
+        start = reinterpret_cast<const unsigned char*>(&ca.sin4.sin_addr.s_addr);
+        len = 4;
       }
       else {
-        start =(const unsigned char*)&ca.sin6.sin6_addr.s6_addr;
-        len=16;
+        start = reinterpret_cast<const unsigned char*>(&ca.sin6.sin6_addr.s6_addr);
+        len = 16;
       }
       return burtle(start, len, 0);
     }
   };
 
-  struct addressOnlyLessThan: public std::binary_function<ComboAddress, ComboAddress, bool>
+  struct addressOnlyLessThan
   {
     bool operator()(const ComboAddress& a, const ComboAddress& b) const
     {
@@ -159,7 +156,7 @@ union ComboAddress {
     }
   };
 
-  struct addressOnlyEqual: public std::binary_function<ComboAddress, ComboAddress, bool>
+  struct addressOnlyEqual
   {
     bool operator()(const ComboAddress& a, const ComboAddress& b) const
     {
@@ -238,7 +235,7 @@ union ComboAddress {
       return false;
 
     int n=0;
-    const unsigned char*ptr = (unsigned char*) &sin6.sin6_addr.s6_addr;
+    const unsigned char* ptr = reinterpret_cast<const unsigned char*>(&sin6.sin6_addr.s6_addr);
     for(n=0; n < 10; ++n)
       if(ptr[n])
         return false;
@@ -258,7 +255,7 @@ union ComboAddress {
     ret.sin4.sin_family=AF_INET;
     ret.sin4.sin_port=sin4.sin_port;
 
-    const unsigned char*ptr = (unsigned char*) &sin6.sin6_addr.s6_addr;
+    const unsigned char* ptr = reinterpret_cast<const unsigned char*>(&sin6.sin6_addr.s6_addr);
     ptr+=(sizeof(sin6.sin6_addr.s6_addr) - sizeof(ret.sin4.sin_addr.s_addr));
     memcpy(&ret.sin4.sin_addr.s_addr, ptr, sizeof(ret.sin4.sin_addr.s_addr));
     return ret;
@@ -268,7 +265,7 @@ union ComboAddress {
   {
     char host[1024];
     int retval = 0;
-    if(sin4.sin_family && !(retval = getnameinfo((struct sockaddr*) this, getSocklen(), host, sizeof(host),0, 0, NI_NUMERICHOST)))
+    if(sin4.sin_family && !(retval = getnameinfo(reinterpret_cast<const struct sockaddr*>(this), getSocklen(), host, sizeof(host),0, 0, NI_NUMERICHOST)))
       return string(host);
     else
       return "invalid "+string(gai_strerror(retval));
@@ -284,6 +281,32 @@ union ComboAddress {
       return string(host);
     else
       return "invalid "+stringerror();
+  }
+
+  [[nodiscard]] string toStringReversed() const
+  {
+    if (isIPv4()) {
+      const auto ip = ntohl(sin4.sin_addr.s_addr);
+      auto a = (ip >> 0) & 0xFF;
+      auto b = (ip >> 8) & 0xFF;
+      auto c = (ip >> 16) & 0xFF;
+      auto d = (ip >> 24) & 0xFF;
+      return std::to_string(a) + "." + std::to_string(b) + "." + std::to_string(c) + "." + std::to_string(d);
+    }
+    else {
+      const auto* addr = &sin6.sin6_addr;
+      std::stringstream res{};
+      res << std::hex;
+      for (int i = 15; i >= 0; i--) {
+        auto byte = addr->s6_addr[i];
+        res << ((byte >> 0) & 0xF) << ".";
+        res << ((byte >> 4) & 0xF);
+        if (i != 0) {
+          res << ".";
+        }
+      }
+      return res.str();
+    }
   }
 
   string toStringWithPort() const
@@ -307,6 +330,14 @@ union ComboAddress {
   string toLogString() const
   {
     return toStringWithPortExcept(53);
+  }
+
+  string toByteString() const
+  {
+    if (isIPv4()) {
+      return string(reinterpret_cast<const char*>(&sin4.sin_addr.s_addr), sizeof(sin4.sin_addr.s_addr));
+    }
+    return string(reinterpret_cast<const char*>(&sin6.sin6_addr.s6_addr), sizeof(sin6.sin6_addr.s6_addr));
   }
 
   void truncate(unsigned int bits) noexcept;
@@ -364,7 +395,7 @@ union ComboAddress {
         index = 128 + index;
       }
 
-      uint8_t *ls_addr = (uint8_t*)sin6.sin6_addr.s6_addr;
+      const uint8_t* ls_addr = reinterpret_cast<const uint8_t*>(sin6.sin6_addr.s6_addr);
       uint8_t byte_idx = index / 8;
       uint8_t bit_idx = index % 8;
 
@@ -455,6 +486,16 @@ public:
     setBits(network.isIPv4() ? std::min(bits, static_cast<uint8_t>(32)) : std::min(bits, static_cast<uint8_t>(128)));
   }
 
+  Netmask(const sockaddr_in* network, uint8_t bits = 0xff): d_network(network)
+  {
+    d_network.sin4.sin_port = 0;
+    setBits(std::min(bits, static_cast<uint8_t>(32)));
+  }
+  Netmask(const sockaddr_in6* network, uint8_t bits = 0xff): d_network(network)
+  {
+    d_network.sin4.sin_port = 0;
+    setBits(std::min(bits, static_cast<uint8_t>(128)));
+  }
   void setBits(uint8_t value)
   {
     d_bits = value;
@@ -493,7 +534,7 @@ public:
     d_network = makeComboAddress(split.first);
 
     if (!split.second.empty()) {
-      setBits(static_cast<uint8_t>(pdns_stou(split.second)));
+      setBits(pdns::checked_stoi<uint8_t>(split.second));
     }
     else if (d_network.sin4.sin_family == AF_INET) {
       setBits(32);
@@ -607,7 +648,7 @@ public:
 
   bool operator==(const Netmask& rhs) const
   {
-    return tie(d_network, d_bits) == tie(rhs.d_network, rhs.d_bits);
+    return std::tie(d_network, d_bits) == std::tie(rhs.d_network, rhs.d_bits);
   }
 
   bool empty() const
@@ -625,7 +666,7 @@ public:
   }
 
   //! Get the total number of address bits for this netmask (either 32 or 128 depending on IP version)
-  uint8_t getAddressBits() const
+  uint8_t getFullBits() const
   {
     return d_network.getBits();
   }
@@ -651,6 +692,7 @@ public:
     }
     return d_network.getBit(bit);
   }
+
 private:
   ComboAddress d_network;
   uint32_t d_mask;
@@ -678,12 +720,12 @@ private:
  * Please see NetmaskGroup for example of simple use case. Other usecases can be found
  * from GeoIPBackend and Sortlist, and from dnsdist.
  */
-template <typename T>
+template <typename T, class K = Netmask>
 class NetmaskTree {
 public:
   class Iterator;
 
-  typedef Netmask key_type;
+  typedef K key_type;
   typedef T value_type;
   typedef std::pair<const key_type,value_type> node_type;
   typedef size_t size_type;
@@ -697,9 +739,9 @@ private:
     explicit TreeNode() noexcept :
       parent(nullptr), node(), assigned(false), d_bits(0) {
     }
-    explicit TreeNode(const key_type& key) noexcept :
+    explicit TreeNode(const key_type& key) :
       parent(nullptr), node({key.getNormalized(), value_type()}),
-      assigned(false), d_bits(key.getAddressBits()) {
+      assigned(false), d_bits(key.getFullBits()) {
     }
 
     //<! Makes a left leaf node with specified key.
@@ -880,15 +922,21 @@ private:
 
   void copyTree(const NetmaskTree& rhs)
   {
-    TreeNode *node;
-
-    node = rhs.d_root.get();
-    if (node != nullptr)
-      node = node->traverse_l();
-    while (node != nullptr) {
-      if (node->assigned)
-        insert(node->node.first).second = node->node.second;
-      node = node->traverse_lnr();
+    try {
+      TreeNode *node = rhs.d_root.get();
+      if (node != nullptr)
+        node = node->traverse_l();
+      while (node != nullptr) {
+        if (node->assigned)
+          insert(node->node.first).second = node->node.second;
+        node = node->traverse_lnr();
+      }
+    }
+    catch (const NetmaskException&) {
+      abort();
+    }
+    catch (const std::logic_error&) {
+      abort();
     }
   }
 
@@ -1119,63 +1167,18 @@ public:
 
   //<! Returns "best match" for key_type, which might not be value
   const node_type* lookup(const key_type& value) const {
-    return lookup(value.getNetwork(), value.getBits());
+    uint8_t max_bits = value.getBits();
+    return lookupImpl(value, max_bits);
   }
 
   //<! Perform best match lookup for value, using at most max_bits
   const node_type* lookup(const ComboAddress& value, int max_bits = 128) const {
-    TreeNode *node = nullptr;
-
     uint8_t addr_bits = value.getBits();
-    if (max_bits < 0 || max_bits > addr_bits)
+    if (max_bits < 0 || max_bits > addr_bits) {
       max_bits = addr_bits;
-
-    if (value.isIPv4())
-      node = d_root->left.get();
-    else if (value.isIPv6())
-      node = d_root->right.get();
-    else
-      throw NetmaskException("invalid address family");
-    if (node == nullptr) return nullptr;
-
-    node_type *ret = nullptr;
-
-    int bits = 0;
-    for(; bits < max_bits; bits++) {
-      bool vall = value.getBit(-1-bits);
-      if (bits >= node->d_bits) {
-        // the end of the current node is reached; continue with the next
-        // (we keep track of last assigned node)
-        if (node->assigned && bits == node->node.first.getBits())
-          ret = &node->node;
-        if (vall) {
-          if (!node->right)
-            break;
-          node = node->right.get();
-        } else {
-          if (!node->left)
-            break;
-          node = node->left.get();
-        }
-        continue;
-      }
-      if (bits >= node->node.first.getBits()) {
-        // the matching branch ends here
-        break;
-      }
-      bool valr = node->node.first.getBit(-1-bits);
-      if (vall != valr) {
-        // the branch matches just upto this point, yet continues in a different
-        // direction
-        break;
-      }
     }
-    // needed if we did not find one in loop
-    if (node->assigned && bits == node->node.first.getBits())
-      ret = &node->node;
 
-    // this can be nullptr.
-    return ret;
+    return lookupImpl(key_type(value, max_bits), max_bits);
   }
 
   //<! Removes key from TreeMap.
@@ -1271,6 +1274,58 @@ public:
   }
 
 private:
+
+  const node_type* lookupImpl(const key_type& value, uint8_t max_bits) const {
+    TreeNode *node = nullptr;
+
+    if (value.isIPv4())
+      node = d_root->left.get();
+    else if (value.isIPv6())
+      node = d_root->right.get();
+    else
+      throw NetmaskException("invalid address family");
+    if (node == nullptr) return nullptr;
+
+    node_type *ret = nullptr;
+
+    int bits = 0;
+    for(; bits < max_bits; bits++) {
+      bool vall = value.getBit(-1-bits);
+      if (bits >= node->d_bits) {
+        // the end of the current node is reached; continue with the next
+        // (we keep track of last assigned node)
+        if (node->assigned && bits == node->node.first.getBits())
+          ret = &node->node;
+        if (vall) {
+          if (!node->right)
+            break;
+          node = node->right.get();
+        } else {
+          if (!node->left)
+            break;
+          node = node->left.get();
+        }
+        continue;
+      }
+      if (bits >= node->node.first.getBits()) {
+        // the matching branch ends here
+        break;
+      }
+      bool valr = node->node.first.getBit(-1-bits);
+      if (vall != valr) {
+        // the branch matches just upto this point, yet continues in a different
+        // direction
+        break;
+      }
+    }
+    // needed if we did not find one in loop
+    if (node->assigned && bits == node->node.first.getBits())
+      ret = &node->node;
+
+    // this can be nullptr.
+    return ret;
+  }
+
   unique_ptr<TreeNode> d_root; //<! Root of our tree
   TreeNode *d_left;
   size_type d_size;
@@ -1422,6 +1477,185 @@ public:
   {}
 };
 
+class AddressAndPortRange
+{
+public:
+  AddressAndPortRange(): d_addrMask(0), d_portMask(0)
+  {
+    d_addr.sin4.sin_family = 0; // disable this doing anything useful
+    d_addr.sin4.sin_port = 0; // this guarantees d_network compares identical
+  }
+
+  AddressAndPortRange(ComboAddress ca, uint8_t addrMask, uint8_t portMask = 0): d_addr(std::move(ca)), d_addrMask(addrMask), d_portMask(portMask)
+  {
+    if (!d_addr.isIPv4()) {
+      d_portMask = 0;
+    }
+
+    uint16_t port = d_addr.getPort();
+    if (d_portMask < 16) {
+      uint16_t mask = ~(0xFFFF >> d_portMask);
+      port = port & mask;
+    }
+
+    if (d_addrMask < d_addr.getBits()) {
+      if (d_portMask > 0) {
+        throw std::runtime_error("Trying to create a AddressAndPortRange with a reduced address mask (" + std::to_string(d_addrMask) + ") and a port range (" + std::to_string(d_portMask) + ")");
+      }
+      d_addr = Netmask(d_addr, d_addrMask).getMaskedNetwork();
+    }
+    d_addr.setPort(port);
+  }
+
+  uint8_t getFullBits() const
+  {
+    return d_addr.getBits() + 16;
+  }
+
+  uint8_t getBits() const
+  {
+    if (d_addrMask < d_addr.getBits()) {
+      return d_addrMask;
+    }
+
+    return d_addr.getBits() + d_portMask;
+  }
+
+  /** Get the value of the bit at the provided bit index. When the index >= 0,
+      the index is relative to the LSB starting at index zero. When the index < 0,
+      the index is relative to the MSB starting at index -1 and counting down.
+  */
+  bool getBit(int index) const
+  {
+    if (index >= getFullBits()) {
+      return false;
+    }
+    if (index < 0) {
+      index = getFullBits() + index;
+    }
+
+    if (index < 16) {
+      /* we are into the port bits */
+      uint16_t port = d_addr.getPort();
+      return ((port & (1U<<index)) != 0x0000);
+    }
+
+    index -= 16;
+
+    return d_addr.getBit(index);
+  }
+
+  bool isIPv4() const
+  {
+    return d_addr.isIPv4();
+  }
+
+  bool isIPv6() const
+  {
+    return d_addr.isIPv6();
+  }
+
+  AddressAndPortRange getNormalized() const
+  {
+    return AddressAndPortRange(d_addr, d_addrMask, d_portMask);
+  }
+
+  AddressAndPortRange getSuper(uint8_t bits) const
+  {
+    if (bits <= d_addrMask) {
+      return AddressAndPortRange(d_addr, bits, 0);
+    }
+    if (bits <= d_addrMask + d_portMask) {
+      return AddressAndPortRange(d_addr, d_addrMask, d_portMask - (bits - d_addrMask));
+    }
+
+    return AddressAndPortRange(d_addr, d_addrMask, d_portMask);
+  }
+
+  const ComboAddress& getNetwork() const
+  {
+    return d_addr;
+  }
+
+  string toString() const
+  {
+    if (d_addrMask < d_addr.getBits() || d_portMask == 0) {
+      return d_addr.toStringNoInterface() + "/" + std::to_string(d_addrMask);
+    }
+    return d_addr.toStringNoInterface() + ":" + std::to_string(d_addr.getPort()) + "/" + std::to_string(d_portMask);
+  }
+
+  bool empty() const
+  {
+    return d_addr.sin4.sin_family == 0;
+  }
+
+  bool operator==(const AddressAndPortRange& rhs) const
+  {
+    return std::tie(d_addr, d_addrMask, d_portMask) == std::tie(rhs.d_addr, rhs.d_addrMask, rhs.d_portMask);
+  }
+
+  bool operator<(const AddressAndPortRange& rhs) const
+  {
+    if (empty() && !rhs.empty()) {
+      return false;
+    }
+
+    if (!empty() && rhs.empty()) {
+      return true;
+    }
+
+    if (d_addrMask > rhs.d_addrMask) {
+      return true;
+    }
+
+    if (d_addrMask < rhs.d_addrMask) {
+      return false;
+    }
+
+    if (d_addr < rhs.d_addr) {
+      return true;
+    }
+
+    if (d_addr > rhs.d_addr) {
+      return false;
+    }
+
+    if (d_portMask > rhs.d_portMask) {
+      return true;
+    }
+
+    if (d_portMask < rhs.d_portMask) {
+      return false;
+    }
+
+    return d_addr.getPort() < rhs.d_addr.getPort();
+  }
+
+  bool operator>(const AddressAndPortRange& rhs) const
+  {
+    return rhs.operator<(*this);
+  }
+
+  struct hash
+  {
+    uint32_t operator()(const AddressAndPortRange& apr) const
+    {
+      ComboAddress::addressOnlyHash hashOp;
+      uint16_t port = apr.d_addr.getPort();
+      /* it's fine to hash the whole address and port because the non-relevant parts have
+         been masked to 0 */
+      return burtle(reinterpret_cast<const unsigned char*>(&port), sizeof(port), hashOp(apr.d_addr));
+    }
+  };
+
+private:
+  ComboAddress d_addr;
+  uint8_t d_addrMask;
+  /* only used for v4 addresses */
+  uint8_t d_portMask;
+};
+
 int SSocket(int family, int type, int flags);
 int SConnect(int sockfd, const ComboAddress& remote);
 /* tries to connect to remote for a maximum of timeout seconds.
@@ -1447,7 +1681,6 @@ bool HarvestDestinationAddress(const struct msghdr* msgh, ComboAddress* destinat
 bool HarvestTimestamp(struct msghdr* msgh, struct timeval* tv);
 void fillMSGHdr(struct msghdr* msgh, struct iovec* iov, cmsgbuf_aligned* cbuf, size_t cbufsize, char* data, size_t datalen, ComboAddress* addr);
 int sendOnNBSocket(int fd, const struct msghdr *msgh);
-ssize_t sendfromto(int sock, const void* data, size_t len, int flags, const ComboAddress& from, const ComboAddress& to);
 size_t sendMsgWithOptions(int fd, const char* buffer, size_t len, const ComboAddress* dest, const ComboAddress* local, unsigned int localItf, int flags);
 
 /* requires a non-blocking, connected TCP socket */
@@ -1456,3 +1689,11 @@ bool isTCPSocketUsable(int sock);
 extern template class NetmaskTree<bool>;
 ComboAddress parseIPAndPort(const std::string& input, uint16_t port);
 
+std::set<std::string> getListOfNetworkInterfaces();
+std::vector<ComboAddress> getListOfAddressesOfNetworkInterface(const std::string& itf);
+
+/* These functions throw if the value was already set to a higher value,
+   or on error */
+void setSocketBuffer(int fd, int optname, uint32_t size);
+void setSocketReceiveBuffer(int fd, uint32_t size);
+void setSocketSendBuffer(int fd, uint32_t size);

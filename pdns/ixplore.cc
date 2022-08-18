@@ -179,8 +179,9 @@ int main(int argc, char** argv) {
       shared_ptr<SOARecordContent> sr;
       uint32_t serial = getSerialFromMaster(master, zone, sr, tt);
       if(ourSerial == serial) {
-        cout<<"still up to date, their serial is "<<serial<<", sleeping "<<sr->d_st.refresh<<" seconds"<<endl;
-        sleep(sr->d_st.refresh);
+        time_t sleepTime = sr ? sr->d_st.refresh : 60;
+        cout<<"still up to date, their serial is "<<serial<<", sleeping "<<sleepTime<<" seconds"<<endl;
+        sleep(sleepTime);
         continue;
       }
 
@@ -213,7 +214,7 @@ int main(int argc, char** argv) {
 
         for(const auto& rr : remove) {
           report<<'-'<< (rr.d_name+zone) <<" IN "<<DNSRecordContent::NumberToType(rr.d_type)<<" "<<rr.d_content->getZoneRepresentation()<<endl;
-          auto range = records.equal_range(tie(rr.d_name, rr.d_type, rr.d_class, rr.d_content));
+          auto range = records.equal_range(std::tie(rr.d_name, rr.d_type, rr.d_class, rr.d_content));
           if(range.first == range.second) {
             cout<<endl<<" !! Could not find record "<<rr.d_name<<" to remove!!"<<endl;
             //	  stop=true;

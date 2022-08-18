@@ -21,8 +21,6 @@
  */
 #pragma once
 
-#include <boost/tuple/tuple.hpp>
-#include <boost/format.hpp>
 #include <boost/optional.hpp>
 #include <iostream>
 #include <map>
@@ -31,18 +29,11 @@
 #include <string>
 #include <vector>
 
-// We have a few paces where boost::tuple is used, and other places where an unscoped tuple is used
-// prefer the boost one for now. We might want to switch to std::tuple one day. Same for tie.
-using boost::make_tuple;
-using boost::tuple;
-using boost::tie;
-
 using std::cerr;
 using std::clog;
 using std::cout;
 using std::endl;
 using std::ifstream;
-using std::make_pair;
 using std::make_unique;
 using std::map;
 using std::max;

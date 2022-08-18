@@ -26,12 +26,15 @@
 #include "dnsparser.hh"
 #include "dnsdist-cache.hh"
 #include "dnsdist-ecs.hh"
-#include "ednsoptions.hh"
 #include "ednssubnet.hh"
 #include "packetcache.hh"
 
 DNSDistPacketCache::DNSDistPacketCache(size_t maxEntries, uint32_t maxTTL, uint32_t minTTL, uint32_t tempFailureTTL, uint32_t maxNegativeTTL, uint32_t staleTTL, bool dontAge, uint32_t shards, bool deferrableInsertLock, bool parseECS): d_maxEntries(maxEntries), d_shardCount(shards), d_maxTTL(maxTTL), d_tempFailureTTL(tempFailureTTL), d_maxNegativeTTL(maxNegativeTTL), d_minTTL(minTTL), d_staleTTL(staleTTL), d_dontAge(dontAge), d_deferrableInsertLock(deferrableInsertLock), d_parseECS(parseECS)
 {
+  if (d_maxEntries == 0) {
+    throw std::runtime_error("Trying to create a 0-sized packet-cache");
+  }
+
   d_shards.resize(d_shardCount);
 
   /* we reserve maxEntries + 1 to avoid rehashing from occurring
@@ -89,7 +92,7 @@ void DNSDistPacketCache::insertLocked(CacheShard& shard, std::unordered_map<uint
 
   std::unordered_map<uint32_t,CacheValue>::iterator it;
   bool result;
-  tie(it, result) = map.insert({key, newValue});
+  std::tie(it, result) = map.insert({key, newValue});
 
   if (result) {
     ++shard.d_entriesCount;
@@ -295,6 +298,7 @@ size_t DNSDistPacketCache::purgeExpired(size_t upTo, const time_t now)
 
   size_t removed = 0;
 
+  d_cleanupCount++;
   for (auto& shard : d_shards) {
     auto map = shard.d_map.write_lock();
     if (map->size() <= maxPerShard) {
@@ -417,9 +421,9 @@ uint32_t DNSDistPacketCache::getKey(const DNSName::string_t& qname, size_t qname
     throw std::range_error("Computing packet cache key for an invalid packet (" + std::to_string(packet.size()) + " < " + std::to_string(sizeof(dnsheader) + qnameWireLength) + ")");
   }
   if (packet.size() > ((sizeof(dnsheader) + qnameWireLength))) {
-    if (!d_cookieHashing) {
-      /* skip EDNS Cookie options if any */
-      result = PacketCache::hashAfterQname(pdns_string_view(reinterpret_cast<const char*>(packet.data()), packet.size()), result, sizeof(dnsheader) + qnameWireLength, false);
+    if (!d_optionsToSkip.empty()) {
+      /* skip EDNS options if any */
+      result = PacketCache::hashAfterQname(pdns_string_view(reinterpret_cast<const char*>(packet.data()), packet.size()), result, sizeof(dnsheader) + qnameWireLength, d_optionsToSkip);
     }
     else {
       result = burtle(&packet.at(sizeof(dnsheader) + qnameWireLength), packet.size() - (sizeof(dnsheader) + qnameWireLength), result);
@@ -479,4 +483,9 @@ uint64_t DNSDistPacketCache::dump(int fd)
   }
 
   return count;
+}
+
+void DNSDistPacketCache::setSkippedOptions(const std::unordered_set<uint16_t>& optionsToSkip)
+{
+  d_optionsToSkip = optionsToSkip;
 }

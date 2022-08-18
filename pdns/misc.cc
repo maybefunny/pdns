@@ -36,7 +36,7 @@
 #include "misc.hh"
 #include <vector>
 #include <sstream>
-#include <errno.h>
+#include <cerrno>
 #include <cstring>
 #include <iostream>
 #include <sys/types.h>
@@ -45,12 +45,14 @@
 #include <poll.h>
 #include <iomanip>
 #include <netinet/tcp.h>
+#include <optional>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include "pdnsexception.hh"
 #include <sys/types.h>
 #include <boost/algorithm/string.hpp>
+#include <boost/format.hpp>
 #include "iputils.hh"
 #include "dnsparser.hh"
 #include <sys/types.h>
@@ -67,7 +69,7 @@
 
 size_t writen2(int fd, const void *buf, size_t count)
 {
-  const char *ptr = (char*)buf;
+  const char *ptr = reinterpret_cast<const char*>(buf);
   const char *eptr = ptr + count;
 
   ssize_t res;
@@ -110,7 +112,7 @@ size_t readn2(int fd, void* buffer, size_t len)
   return len;
 }
 
-size_t readn2WithTimeout(int fd, void* buffer, size_t len, const struct timeval& idleTimeout, const struct timeval& totalTimeout)
+size_t readn2WithTimeout(int fd, void* buffer, size_t len, const struct timeval& idleTimeout, const struct timeval& totalTimeout, bool allowIncomplete)
 {
   size_t pos = 0;
   struct timeval start{0,0};
@@ -123,6 +125,9 @@ size_t readn2WithTimeout(int fd, void* buffer, size_t len, const struct timeval&
     ssize_t got = read(fd, (char *)buffer + pos, len - pos);
     if (got > 0) {
       pos += (size_t) got;
+      if (allowIncomplete) {
+        break;
+      }
     }
     else if (got == 0) {
       throw runtime_error("EOF while reading message");
@@ -165,7 +170,7 @@ size_t writen2WithTimeout(int fd, const void * buffer, size_t len, const struct 
 {
   size_t pos = 0;
   do {
-    ssize_t written = write(fd, (char *)buffer + pos, len - pos);
+    ssize_t written = write(fd, reinterpret_cast<const char *>(buffer) + pos, len - pos);
 
     if (written > 0) {
       pos += (size_t) written;
@@ -194,6 +199,32 @@ size_t writen2WithTimeout(int fd, const void * buffer, size_t len, const struct 
   return len;
 }
 
+auto pdns::getMessageFromErrno(const int errnum) -> std::string
+{
+  const size_t errLen = 2048;
+  std::string errMsgData{};
+  errMsgData.resize(errLen);
+
+  const char* errMsg = nullptr;
+#ifdef STRERROR_R_CHAR_P
+  errMsg = strerror_r(errnum, errMsgData.data(), errMsgData.length());
+#else
+  // This can fail, and when it does, it sets errno. We ignore that and
+  // set our own error message instead.
+  int res = strerror_r(errnum, errMsgData.data(), errMsgData.length());
+  errMsg = errMsgData.c_str();
+  if (res != 0) {
+    errMsg = "Unknown (the exact error could not be retrieved)";
+  }
+#endif
+
+  // We make a copy here because `strerror_r()` might return a static
+  // immutable buffer for an error message. The copy shouldn't be
+  // critical though, we're on the bailout/error-handling path anyways.
+  std::string message{errMsg};
+  return message;
+}
+
 string nowTime()
 {
   time_t now = time(nullptr);
@@ -201,8 +232,10 @@ string nowTime()
   localtime_r(&now, &tm);
   char buffer[30];
   // YYYY-mm-dd HH:MM:SS TZOFF
-  strftime(buffer, sizeof(buffer), "%F %T %z", &tm);
-  buffer[sizeof(buffer)-1] = '\0';
+  size_t ret = strftime(buffer, sizeof(buffer), "%F %T %z", &tm);
+  if (ret == 0) {
+    buffer[0] = '\0';
+  }
   return string(buffer);
 }
 
@@ -224,7 +257,7 @@ uint32_t getLong(const unsigned char* p)
 
 uint32_t getLong(const char* p)
 {
-  return getLong((unsigned char *)p);
+  return getLong(reinterpret_cast<const unsigned char *>(p));
 }
 
 static bool ciEqual(const string& a, const string& b)
@@ -277,28 +310,31 @@ bool stripDomainSuffix(string *qname, const string &domain)
   return true;
 }
 
-static void parseService4(const string &descr, ServiceTuple &st)
+static void parseService4(const string& descr, ServiceTuple& st)
 {
-  vector<string>parts;
-  stringtok(parts,descr,":");
-  if(parts.empty())
-    throw PDNSException("Unable to parse '"+descr+"' as a service");
-  st.host=parts[0];
-  if(parts.size()>1)
-    st.port=pdns_stou(parts[1]);
+  vector<string> parts;
+  stringtok(parts, descr, ":");
+  if (parts.empty()) {
+    throw PDNSException("Unable to parse '" + descr + "' as a service");
+  }
+  st.host = parts[0];
+  if (parts.size() > 1) {
+    pdns::checked_stoi_into(st.port, parts[1]);
+  }
 }
 
-static void parseService6(const string &descr, ServiceTuple &st)
+static void parseService6(const string& descr, ServiceTuple& st)
 {
-  string::size_type pos=descr.find(']');
-  if(pos == string::npos)
-    throw PDNSException("Unable to parse '"+descr+"' as an IPv6 service");
+  string::size_type pos = descr.find(']');
+  if (pos == string::npos) {
+    throw PDNSException("Unable to parse '" + descr + "' as an IPv6 service");
+  }
 
-  st.host=descr.substr(1, pos-1);
-  if(pos + 2 < descr.length())
-    st.port=pdns_stou(descr.substr(pos+2));
+  st.host = descr.substr(1, pos - 1);
+  if (pos + 2 < descr.length()) {
+    pdns::checked_stoi_into(st.port, descr.substr(pos + 2));
+  }
 }
-
 
 void parseService(const string &descr, ServiceTuple &st)
 {
@@ -574,6 +610,22 @@ string makeHexDump(const string& str)
   return ret;
 }
 
+string makeBytesFromHex(const string &in) {
+  if (in.size() % 2 != 0) {
+    throw std::range_error("odd number of bytes in hex string");
+  }
+  string ret;
+  ret.reserve(in.size());
+  unsigned int num;
+  for (size_t i = 0; i < in.size(); i+=2) {
+    string numStr = in.substr(i, 2);
+    num = 0;
+    sscanf(numStr.c_str(), "%02x", &num);
+    ret.push_back((uint8_t)num);
+  }
+  return ret;
+}
+
 void normalizeTV(struct timeval& tv)
 {
   if(tv.tv_usec > 1000000) {
@@ -652,43 +704,47 @@ string stripDot(const string& dom)
   return dom.substr(0,dom.size()-1);
 }
 
-
-
 int makeIPv6sockaddr(const std::string& addr, struct sockaddr_in6* ret)
 {
-  if(addr.empty())
+  if (addr.empty()) {
     return -1;
+  }
+
   string ourAddr(addr);
-  bool portSet = false;
-  unsigned int port;
-  if(addr[0]=='[') { // [::]:53 style address
+  std::optional<uint16_t> port = std::nullopt;
+
+  if (addr[0] == '[') { // [::]:53 style address
     string::size_type pos = addr.find(']');
-    if(pos == string::npos)
+    if (pos == string::npos) {
       return -1;
-    ourAddr.assign(addr.c_str() + 1, pos-1);
+    }
+
+    ourAddr.assign(addr.c_str() + 1, pos - 1);
     if (pos + 1 != addr.size()) { // complete after ], no port specified
-      if (pos + 2 > addr.size() || addr[pos+1]!=':')
+      if (pos + 2 > addr.size() || addr[pos + 1] != ':') {
         return -1;
-      try {
-        port = pdns_stou(addr.substr(pos+2));
-        portSet = true;
       }
-      catch(const std::out_of_range&) {
+
+      try {
+        auto tmpPort = pdns::checked_stoi<uint16_t>(addr.substr(pos + 2));
+        port = std::make_optional(tmpPort);
+      }
+      catch (const std::out_of_range&) {
         return -1;
       }
     }
   }
-  ret->sin6_scope_id=0;
-  ret->sin6_family=AF_INET6;
 
-  if(inet_pton(AF_INET6, ourAddr.c_str(), (void*)&ret->sin6_addr) != 1) {
-    struct addrinfo* res;
-    struct addrinfo hints;
-    memset(&hints, 0, sizeof(hints));
+  ret->sin6_scope_id = 0;
+  ret->sin6_family = AF_INET6;
 
-    hints.ai_family = AF_INET6;
+  if (inet_pton(AF_INET6, ourAddr.c_str(), (void*)&ret->sin6_addr) != 1) {
+    struct addrinfo hints{};
+    std::memset(&hints, 0, sizeof(struct addrinfo));
     hints.ai_flags = AI_NUMERICHOST;
+    hints.ai_family = AF_INET6;
 
+    struct addrinfo* res = nullptr;
     // getaddrinfo has anomalous return codes, anything nonzero is an error, positive or negative
     if (getaddrinfo(ourAddr.c_str(), nullptr, &hints, &res) != 0) {
       return -1;
@@ -698,11 +754,8 @@ int makeIPv6sockaddr(const std::string& addr, struct sockaddr_in6* ret)
     freeaddrinfo(res);
   }
 
-  if(portSet) {
-    if(port > 65535)
-      return -1;
-
-    ret->sin6_port = htons(port);
+  if (port.has_value()) {
+    ret->sin6_port = htons(*port);
   }
 
   return 0;
@@ -726,7 +779,7 @@ int makeIPv4sockaddr(const std::string& str, struct sockaddr_in* ret)
   if(!*(str.c_str() + pos + 1)) // trailing :
     return -1;
 
-  char *eptr = (char*)str.c_str() + str.size();
+  char *eptr = const_cast<char*>(str.c_str()) + str.size();
   int port = strtol(str.c_str() + pos + 1, &eptr, 10);
   if (port < 0 || port > 65535)
     return -1;
@@ -775,12 +828,10 @@ bool readFileIfThere(const char* fname, std::string* line)
 {
   line->clear();
   auto fp = std::unique_ptr<FILE, int(*)(FILE*)>(fopen(fname, "r"), fclose);
-  if(!fp)
+  if (!fp) {
     return false;
-  stringfgets(fp.get(), *line);
-  fp.reset();
-
-  return true;
+  }
+  return stringfgets(fp.get(), *line);
 }
 
 Regex::Regex(const string &expr)
@@ -892,120 +943,6 @@ void setFilenumLimit(unsigned int lim)
     unixDie("Setting number of available file descriptors");
 }
 
-#define burtlemix(a,b,c) \
-{ \
-  a -= b; a -= c; a ^= (c>>13); \
-  b -= c; b -= a; b ^= (a<<8); \
-  c -= a; c -= b; c ^= (b>>13); \
-  a -= b; a -= c; a ^= (c>>12);  \
-  b -= c; b -= a; b ^= (a<<16); \
-  c -= a; c -= b; c ^= (b>>5); \
-  a -= b; a -= c; a ^= (c>>3);  \
-  b -= c; b -= a; b ^= (a<<10); \
-  c -= a; c -= b; c ^= (b>>15); \
-}
-
-uint32_t burtle(const unsigned char* k, uint32_t length, uint32_t initval)
-{
-  uint32_t a,b,c,len;
-
-   /* Set up the internal state */
-  len = length;
-  a = b = 0x9e3779b9;  /* the golden ratio; an arbitrary value */
-  c = initval;         /* the previous hash value */
-
-  /*---------------------------------------- handle most of the key */
-  while (len >= 12) {
-    a += (k[0] +((uint32_t)k[1]<<8) +((uint32_t)k[2]<<16) +((uint32_t)k[3]<<24));
-    b += (k[4] +((uint32_t)k[5]<<8) +((uint32_t)k[6]<<16) +((uint32_t)k[7]<<24));
-    c += (k[8] +((uint32_t)k[9]<<8) +((uint32_t)k[10]<<16)+((uint32_t)k[11]<<24));
-    burtlemix(a,b,c);
-    k += 12; len -= 12;
-  }
-
-  /*------------------------------------- handle the last 11 bytes */
-  c += length;
-  switch(len) {             /* all the case statements fall through */
-  case 11: c+=((uint32_t)k[10]<<24);
-    /* fall-through */
-  case 10: c+=((uint32_t)k[9]<<16);
-    /* fall-through */
-  case 9 : c+=((uint32_t)k[8]<<8);
-    /* the first byte of c is reserved for the length */
-    /* fall-through */
-  case 8 : b+=((uint32_t)k[7]<<24);
-    /* fall-through */
-  case 7 : b+=((uint32_t)k[6]<<16);
-    /* fall-through */
-  case 6 : b+=((uint32_t)k[5]<<8);
-    /* fall-through */
-  case 5 : b+=k[4];
-    /* fall-through */
-  case 4 : a+=((uint32_t)k[3]<<24);
-    /* fall-through */
-  case 3 : a+=((uint32_t)k[2]<<16);
-    /* fall-through */
-  case 2 : a+=((uint32_t)k[1]<<8);
-    /* fall-through */
-  case 1 : a+=k[0];
-    /* case 0: nothing left to add */
-  }
-  burtlemix(a,b,c);
-  /*-------------------------------------------- report the result */
-  return c;
-}
-
-uint32_t burtleCI(const unsigned char* k, uint32_t length, uint32_t initval)
-{
-  uint32_t a,b,c,len;
-
-   /* Set up the internal state */
-  len = length;
-  a = b = 0x9e3779b9;  /* the golden ratio; an arbitrary value */
-  c = initval;         /* the previous hash value */
-
-  /*---------------------------------------- handle most of the key */
-  while (len >= 12) {
-    a += (dns_tolower(k[0]) +((uint32_t)dns_tolower(k[1])<<8) +((uint32_t)dns_tolower(k[2])<<16) +((uint32_t)dns_tolower(k[3])<<24));
-    b += (dns_tolower(k[4]) +((uint32_t)dns_tolower(k[5])<<8) +((uint32_t)dns_tolower(k[6])<<16) +((uint32_t)dns_tolower(k[7])<<24));
-    c += (dns_tolower(k[8]) +((uint32_t)dns_tolower(k[9])<<8) +((uint32_t)dns_tolower(k[10])<<16)+((uint32_t)dns_tolower(k[11])<<24));
-    burtlemix(a,b,c);
-    k += 12; len -= 12;
-  }
-
-  /*------------------------------------- handle the last 11 bytes */
-  c += length;
-  switch(len) {             /* all the case statements fall through */
-  case 11: c+=((uint32_t)dns_tolower(k[10])<<24);
-    /* fall-through */
-  case 10: c+=((uint32_t)dns_tolower(k[9])<<16);
-    /* fall-through */
-  case 9 : c+=((uint32_t)dns_tolower(k[8])<<8);
-    /* the first byte of c is reserved for the length */
-    /* fall-through */
-  case 8 : b+=((uint32_t)dns_tolower(k[7])<<24);
-    /* fall-through */
-  case 7 : b+=((uint32_t)dns_tolower(k[6])<<16);
-    /* fall-through */
-  case 6 : b+=((uint32_t)dns_tolower(k[5])<<8);
-    /* fall-through */
-  case 5 : b+=dns_tolower(k[4]);
-    /* fall-through */
-  case 4 : a+=((uint32_t)dns_tolower(k[3])<<24);
-    /* fall-through */
-  case 3 : a+=((uint32_t)dns_tolower(k[2])<<16);
-    /* fall-through */
-  case 2 : a+=((uint32_t)dns_tolower(k[1])<<8);
-    /* fall-through */
-  case 1 : a+=dns_tolower(k[0]);
-    /* case 0: nothing left to add */
-  }
-  burtlemix(a,b,c);
-  /*-------------------------------------------- report the result */
-  return c;
-}
-
-
 bool setSocketTimestamps(int fd)
 {
 #ifdef SO_TIMESTAMP
@@ -1092,31 +1029,126 @@ bool setCloseOnExec(int sock)
   return true;
 }
 
+#ifdef __linux__
+#include <linux/rtnetlink.h>
+
+int getMACAddress(const ComboAddress& ca, char* dest, size_t destLen)
+{
+  struct {
+    struct nlmsghdr headermsg;
+    struct ndmsg neighbormsg;
+  } request;
+
+  std::array<char, 8192> buffer;
+
+  auto sock = FDWrapper(socket(AF_NETLINK, SOCK_RAW|SOCK_CLOEXEC, NETLINK_ROUTE));
+  if (sock.getHandle() == -1) {
+    return errno;
+  }
+
+  memset(&request, 0, sizeof(request));
+  request.headermsg.nlmsg_len = NLMSG_LENGTH(sizeof(struct ndmsg));
+  request.headermsg.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+  request.headermsg.nlmsg_type = RTM_GETNEIGH;
+  request.neighbormsg.ndm_family = ca.sin4.sin_family;
+
+  while (true) {
+    ssize_t sent = send(sock.getHandle(), &request, sizeof(request), 0);
+    if (sent == -1) {
+      if (errno == EINTR) {
+        continue;
+      }
+      return errno;
+    }
+    else if (static_cast<size_t>(sent) != sizeof(request)) {
+      return EIO;
+    }
+    break;
+  }
+
+  bool done = false;
+  bool foundIP = false;
+  bool foundMAC = false;
+  do {
+    ssize_t got = recv(sock.getHandle(), buffer.data(), buffer.size(), 0);
+
+    if (got < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      return errno;
+    }
+
+    size_t remaining = static_cast<size_t>(got);
+    for (struct nlmsghdr* nlmsgheader = reinterpret_cast<struct nlmsghdr*>(buffer.data());
+         done == false && NLMSG_OK (nlmsgheader, remaining);
+         nlmsgheader = reinterpret_cast<struct nlmsghdr*>(NLMSG_NEXT(nlmsgheader, remaining))) {
+
+      if (nlmsgheader->nlmsg_type == NLMSG_DONE) {
+        done = true;
+        break;
+      }
+
+      auto nd = reinterpret_cast<struct ndmsg*>(NLMSG_DATA(nlmsgheader));
+      auto rtatp = reinterpret_cast<struct rtattr*>(reinterpret_cast<char*>(nd) + NLMSG_ALIGN(sizeof(struct ndmsg)));
+      int rtattrlen = nlmsgheader->nlmsg_len - NLMSG_LENGTH(sizeof(struct ndmsg));
+
+      if (nd->ndm_family != ca.sin4.sin_family) {
+        continue;
+      }
+
+      if (ca.sin4.sin_family == AF_INET6 && ca.sin6.sin6_scope_id != 0 && static_cast<int32_t>(ca.sin6.sin6_scope_id) != nd->ndm_ifindex) {
+        continue;
+      }
+
+      for (; done == false && RTA_OK(rtatp, rtattrlen); rtatp = RTA_NEXT(rtatp, rtattrlen)) {
+        if (rtatp->rta_type == NDA_DST){
+          if (nd->ndm_family == AF_INET) {
+            auto inp = reinterpret_cast<struct in_addr*>(RTA_DATA(rtatp));
+            if (inp->s_addr == ca.sin4.sin_addr.s_addr) {
+              foundIP = true;
+            }
+          }
+          else if (nd->ndm_family == AF_INET6) {
+            auto inp = reinterpret_cast<struct in6_addr *>(RTA_DATA(rtatp));
+            if (memcmp(inp->s6_addr, ca.sin6.sin6_addr.s6_addr, sizeof(ca.sin6.sin6_addr.s6_addr)) == 0) {
+              foundIP = true;
+            }
+          }
+        }
+        else if (rtatp->rta_type == NDA_LLADDR) {
+          if (foundIP) {
+            size_t addrLen = rtatp->rta_len - sizeof(struct rtattr);
+            if (addrLen > destLen) {
+              return ENOBUFS;
+            }
+            memcpy(dest, reinterpret_cast<const char*>(rtatp) + sizeof(struct rtattr), addrLen);
+            foundMAC = true;
+            done = true;
+            break;
+          }
+        }
+      }
+    }
+  }
+  while (done == false);
+
+  return foundMAC ? 0 : ENOENT;
+}
+#else
+int getMACAddress(const ComboAddress& ca, char* dest, size_t len)
+{
+  return ENOENT;
+}
+#endif /* __linux__ */
+
 string getMACAddress(const ComboAddress& ca)
 {
   string ret;
-#ifdef __linux__
-  ifstream ifs("/proc/net/arp");
-  if(!ifs)
-    return ret;
-  string line;
-  string match=ca.toString()+' ';
-  while(getline(ifs, line)) {
-    if(boost::starts_with(line, match)) {
-      vector<string> parts;
-      stringtok(parts, line, " \n\t\r");
-      if(parts.size() < 4)
-        return ret;
-      unsigned int tmp[6];
-      if (sscanf(parts[3].c_str(), "%02x:%02x:%02x:%02x:%02x:%02x", tmp, tmp+1, tmp+2, tmp+3, tmp+4, tmp+5) != 6) {
-        return ret;
-      }
-      for(unsigned int i : tmp)
-        ret.append(1, (char)i);
-      return ret;
-    }
+  char tmp[6];
+  if (getMACAddress(ca, tmp, sizeof(tmp)) == 0) {
+    ret.append(tmp, sizeof(tmp));
   }
-#endif
   return ret;
 }
 
@@ -1124,26 +1156,79 @@ uint64_t udpErrorStats(const std::string& str)
 {
 #ifdef __linux__
   ifstream ifs("/proc/net/snmp");
-  if(!ifs)
+  if (!ifs) {
     return 0;
+  }
+
   string line;
-  vector<string> parts;
-  while(getline(ifs,line)) {
-    if(boost::starts_with(line, "Udp: ") && isdigit(line[5])) {
+  while (getline(ifs, line)) {
+    if (boost::starts_with(line, "Udp: ") && isdigit(line.at(5))) {
+      vector<string> parts;
       stringtok(parts, line, " \n\t\r");
-      if(parts.size() < 7)
-	break;
-      if(str=="udp-rcvbuf-errors")
-	return std::stoull(parts[5]);
-      else if(str=="udp-sndbuf-errors")
-	return std::stoull(parts[6]);
-      else if(str=="udp-noport-errors")
-	return std::stoull(parts[2]);
-      else if(str=="udp-in-errors")
-	return std::stoull(parts[3]);
-      else
-	return 0;
+
+      if (parts.size() < 7) {
+        break;
+      }
+
+      if (str == "udp-rcvbuf-errors") {
+        return std::stoull(parts.at(5));
+      }
+      else if (str == "udp-sndbuf-errors") {
+        return std::stoull(parts.at(6));
+      }
+      else if (str == "udp-noport-errors") {
+        return std::stoull(parts.at(2));
+      }
+      else if (str == "udp-in-errors") {
+        return std::stoull(parts.at(3));
+      }
+      else if (parts.size() >= 8 && str == "udp-in-csum-errors") {
+        return std::stoull(parts.at(7));
+      }
+      else {
+        return 0;
+      }
     }
+  }
+#endif
+  return 0;
+}
+
+uint64_t udp6ErrorStats(const std::string& str)
+{
+#ifdef __linux__
+  const std::map<std::string, std::string> keys = {
+    { "udp6-in-errors", "Udp6InErrors" },
+    { "udp6-recvbuf-errors", "Udp6RcvbufErrors" },
+    { "udp6-sndbuf-errors", "Udp6SndbufErrors" },
+    { "udp6-noport-errors", "Udp6NoPorts" },
+    { "udp6-in-csum-errors", "Udp6InCsumErrors" }
+  };
+
+  auto key = keys.find(str);
+  if (key == keys.end()) {
+    return 0;
+  }
+
+  ifstream ifs("/proc/net/snmp6");
+  if (!ifs) {
+    return 0;
+  }
+
+  std::string line;
+  while (getline(ifs, line)) {
+    if (!boost::starts_with(line, key->second)) {
+      continue;
+    }
+
+    std::vector<std::string> parts;
+    stringtok(parts, line, " \n\t\r");
+
+    if (parts.size() != 2) {
+      return 0;
+    }
+
+    return std::stoull(parts.at(1));
   }
 #endif
   return 0;
@@ -1264,7 +1349,7 @@ uint64_t getOpenFileDescriptors(const std::string&)
 {
 #ifdef __linux__
   DIR* dirhdl=opendir(("/proc/"+std::to_string(getpid())+"/fd/").c_str());
-  if(!dirhdl) 
+  if(!dirhdl)
     return 0;
 
   struct dirent *entry;
@@ -1272,7 +1357,7 @@ uint64_t getOpenFileDescriptors(const std::string&)
   while((entry = readdir(dirhdl))) {
     uint32_t num;
     try {
-      num = pdns_stou(entry->d_name);
+      pdns::checked_stoi_into(num, entry->d_name);
     } catch (...) {
       continue; // was not a number.
     }
@@ -1282,6 +1367,9 @@ uint64_t getOpenFileDescriptors(const std::string&)
   closedir(dirhdl);
   return ret;
 
+#elif defined(__OpenBSD__)
+  // FreeBSD also has this in libopenbsd, but I don't know if that's available always
+  return getdtablecount();
 #else
   return 0;
 #endif
@@ -1298,7 +1386,7 @@ uint64_t getRealMemoryUsage(const std::string&)
   ifs >> size >> resident >> shared >> text >> lib >> data;
 
   // We used to use "data" here, but it proves unreliable and even is marked "broken"
-  // in https://www.kernel.org/doc/html/latest/filesystems/proc.html 
+  // in https://www.kernel.org/doc/html/latest/filesystems/proc.html
   return resident * getpagesize();
 #else
   struct rusage ru;
@@ -1347,7 +1435,7 @@ double DiffTime(const struct timespec& first, const struct timespec& second)
 {
   int seconds=second.tv_sec - first.tv_sec;
   int nseconds=second.tv_nsec - first.tv_nsec;
-  
+
   if(nseconds < 0) {
     seconds-=1;
     nseconds+=1000000000;
@@ -1359,7 +1447,7 @@ double DiffTime(const struct timeval& first, const struct timeval& second)
 {
   int seconds=second.tv_sec - first.tv_sec;
   int useconds=second.tv_usec - first.tv_usec;
-  
+
   if(useconds < 0) {
     seconds-=1;
     useconds+=1000000;
@@ -1423,25 +1511,6 @@ gid_t strToGID(const string &str)
   }
 
   return result;
-}
-
-unsigned int pdns_stou(const std::string& str, size_t * idx, int base)
-{
-  if (str.empty()) return 0; // compatibility
-  unsigned long result;
-  try {
-    result = std::stoul(str, idx, base);
-  }
-  catch(std::invalid_argument& e) {
-    throw std::invalid_argument(string(e.what()) + "; (invalid argument during std::stoul); data was \""+str+"\"");
-  }
-  catch(std::out_of_range& e) {
-    throw std::out_of_range(string(e.what()) + "; (out of range during std::stoul); data was \""+str+"\"");
-  }
-  if (result > std::numeric_limits<unsigned int>::max()) {
-    throw std::out_of_range("stoul returned result out of unsigned int range; data was \""+str+"\"");
-  }
-  return static_cast<unsigned int>(result);
 }
 
 bool isSettingThreadCPUAffinitySupported()
@@ -1642,3 +1711,36 @@ size_t parseSVCBValueList(const std::string &in, vector<std::string> &val) {
   parseSVCBValueListFromParsedRFC1035CharString(parsed, val);
   return ret;
 };
+
+#ifdef HAVE_CRYPTO_MEMCMP
+#include <openssl/crypto.h>
+#else /* HAVE_CRYPTO_MEMCMP */
+#ifdef HAVE_SODIUM_MEMCMP
+#include <sodium.h>
+#endif /* HAVE_SODIUM_MEMCMP */
+#endif /* HAVE_CRYPTO_MEMCMP */
+
+bool constantTimeStringEquals(const std::string& a, const std::string& b)
+{
+  if (a.size() != b.size()) {
+    return false;
+  }
+  const size_t size = a.size();
+#ifdef HAVE_CRYPTO_MEMCMP
+  return CRYPTO_memcmp(a.c_str(), b.c_str(), size) == 0;
+#else /* HAVE_CRYPTO_MEMCMP */
+#ifdef HAVE_SODIUM_MEMCMP
+  return sodium_memcmp(a.c_str(), b.c_str(), size) == 0;
+#else /* HAVE_SODIUM_MEMCMP */
+  const volatile unsigned char *_a = (const volatile unsigned char *) a.c_str();
+  const volatile unsigned char *_b = (const volatile unsigned char *) b.c_str();
+  unsigned char res = 0;
+
+  for (size_t idx = 0; idx < size; idx++) {
+    res |= _a[idx] ^ _b[idx];
+  }
+
+  return res == 0;
+#endif /* !HAVE_SODIUM_MEMCMP */
+#endif /* !HAVE_CRYPTO_MEMCMP */
+}

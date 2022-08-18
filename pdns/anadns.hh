@@ -20,8 +20,6 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 #pragma once
-#include <boost/tuple/tuple.hpp>
-#include <boost/tuple/tuple_comparison.hpp>
 #include <string>
 #include <netinet/ip.h>
 #include <netinet/udp.h>
@@ -37,8 +35,8 @@ struct QuestionIdentifier
   bool operator<(const QuestionIdentifier& rhs) const
   {
     return 
-      tie(d_id,         d_qtype,     d_source,     d_dest,     d_qname) < 
-      tie(rhs.d_id, rhs.d_qtype, rhs.d_source, rhs.d_dest, rhs.d_qname);
+      std::tie(d_id,         d_qtype,     d_source,     d_dest,     d_qname) <
+      std::tie(rhs.d_id, rhs.d_qtype, rhs.d_source, rhs.d_dest, rhs.d_qname);
   }
 
 
@@ -71,8 +69,8 @@ struct QuestionIdentifier
   ComboAddress d_source, d_dest;
 
   DNSName d_qname;
-  uint16_t d_qtype;
-  uint16_t d_id;
+  uint16_t d_qtype{0};
+  uint16_t d_id{0};
 };
 
 inline ostream& operator<<(ostream &s, const QuestionIdentifier& qi) 
