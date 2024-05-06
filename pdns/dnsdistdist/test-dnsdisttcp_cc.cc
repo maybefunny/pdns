@@ -19,7 +19,10 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
+#ifndef BOOST_TEST_DYN_LINK
 #define BOOST_TEST_DYN_LINK
+#endif
+
 #define BOOST_TEST_NO_MAIN
 
 #include <boost/test/unit_test.hpp>
@@ -31,12 +34,7 @@
 #include "dnsdist-tcp-downstream.hh"
 #include "dnsdist-tcp-upstream.hh"
 
-struct DNSDistStats g_stats;
 GlobalStateHolder<NetmaskGroup> g_ACL;
-GlobalStateHolder<vector<DNSDistRuleAction> > g_ruleactions;
-GlobalStateHolder<vector<DNSDistResponseRuleAction> > g_respruleactions;
-GlobalStateHolder<vector<DNSDistResponseRuleAction> > g_cachehitrespruleactions;
-GlobalStateHolder<vector<DNSDistResponseRuleAction> > g_selfansweredrespruleactions;
 GlobalStateHolder<servers_t> g_dstates;
 
 QueryCount g_qcount;
@@ -48,7 +46,7 @@ bool checkDNSCryptQuery(const ClientState& cs, PacketBuffer& query, std::unique_
   return false;
 }
 
-bool checkQueryHeaders(const struct dnsheader* dh, ClientState&)
+bool checkQueryHeaders(const struct dnsheader& dnsHeader, ClientState& clientState)
 {
   return true;
 }
@@ -58,32 +56,32 @@ uint64_t uptimeOfProcess(const std::string& str)
   return 0;
 }
 
-void handleResponseSent(const IDState& ids, double udiff, const ComboAddress& client, const ComboAddress& backend, unsigned int size, const dnsheader& cleartextDH, dnsdist::Protocol protocol)
+void handleResponseSent(const InternalQueryState& ids, double udiff, const ComboAddress& client, const ComboAddress& backend, unsigned int size, const dnsheader& cleartextDH, dnsdist::Protocol protocol, bool fromBackend)
 {
 }
 
-static std::function<ProcessQueryResult(DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend)> s_processQuery;
+std::function<ProcessQueryResult(DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend)> s_processQuery;
 
-ProcessQueryResult processQuery(DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend)
+ProcessQueryResult processQuery(DNSQuestion& dq, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend)
 {
   if (s_processQuery) {
-    return s_processQuery(dq, cs, holders, selectedBackend);
+    return s_processQuery(dq, selectedBackend);
   }
 
   return ProcessQueryResult::Drop;
 }
 
-bool responseContentMatches(const PacketBuffer& response, const DNSName& qname, const uint16_t qtype, const uint16_t qclass, const std::shared_ptr<DownstreamState>& remote, unsigned int& qnameWireLength)
+bool responseContentMatches(const PacketBuffer& response, const DNSName& qname, const uint16_t qtype, const uint16_t qclass, const std::shared_ptr<DownstreamState>& remote)
 {
   return true;
 }
 
-static std::function<bool(PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted)> s_processResponse;
+static std::function<bool(PacketBuffer& response, DNSResponse& dr, bool muted)> s_processResponse;
 
-bool processResponse(PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted, bool receivedOverUDP)
+bool processResponse(PacketBuffer& response, const std::vector<dnsdist::rules::ResponseRuleAction>& respRuleActions, const std::vector<dnsdist::rules::ResponseRuleAction>& cacheInsertedRespRuleActions, DNSResponse& dnsResponse, bool muted)
 {
   if (s_processResponse) {
-    return s_processResponse(response, localRespRuleActions, dr, muted);
+    return s_processResponse(response, dnsResponse, muted);
   }
 
   return false;
@@ -206,11 +204,6 @@ public:
   {
     auto step = getStep();
     BOOST_REQUIRE_EQUAL(step.request, !d_client ? ExpectedStep::ExpectedRequest::closeClient : ExpectedStep::ExpectedRequest::closeBackend);
-  }
-
-  bool hasBufferedData() const override
-  {
-    return false;
   }
 
   bool isUsable() const override
@@ -440,6 +433,39 @@ static void prependPayloadEditingID(PacketBuffer& buffer, const PacketBuffer& pa
   buffer.insert(buffer.begin(), newPayload.begin(), newPayload.end());
 }
 
+struct TestFixture
+{
+  TestFixture()
+  {
+    reset();
+  }
+  TestFixture(const TestFixture&) = delete;
+  TestFixture(TestFixture&&) = delete;
+  TestFixture& operator=(const TestFixture&) = delete;
+  TestFixture& operator=(TestFixture&&) = delete;
+  ~TestFixture()
+  {
+    reset();
+  }
+
+  static void reset()
+  {
+    s_steps.clear();
+    s_readBuffer.clear();
+    s_writeBuffer.clear();
+    s_backendReadBuffer.clear();
+    s_backendWriteBuffer.clear();
+
+    g_proxyProtocolACL.clear();
+    g_verbose = false;
+    IncomingTCPConnectionState::clearAllDownstreamConnections();
+
+    /* we _NEED_ to set this function to empty otherwise we might get what was set
+       by the last test, and we might not like it at all */
+    s_processQuery = nullptr;
+  }
+};
+
 static void testInit(const std::string& name, TCPClientThreadData& threadData)
 {
 #ifdef DEBUGLOG_ENABLED
@@ -448,25 +474,16 @@ static void testInit(const std::string& name, TCPClientThreadData& threadData)
   (void) name;
 #endif
 
-  s_steps.clear();
-  s_readBuffer.clear();
-  s_writeBuffer.clear();
-  s_backendReadBuffer.clear();
-  s_backendWriteBuffer.clear();
-
-  g_proxyProtocolACL.clear();
-  g_verbose = false;
-  IncomingTCPConnectionState::clearAllDownstreamConnections();
-
+  TestFixture::reset();
   threadData.mplexer = std::make_unique<MockupFDMultiplexer>();
 }
 
 #define TEST_INIT(str) testInit(str, threadData)
 
-BOOST_AUTO_TEST_CASE(test_IncomingConnection_SelfAnswered)
+BOOST_FIXTURE_TEST_CASE(test_IncomingConnection_SelfAnswered, TestFixture)
 {
   auto local = getBackendAddress("1", 80);
-  ClientState localCS(local, true, false, false, "", {});
+  ClientState localCS(local, true, false, 0, "", {}, true);
   auto tlsCtx = std::make_shared<MockupTLSCtx>();
   localCS.tlsFrontend = std::make_shared<TLSFrontend>(tlsCtx);
 
@@ -495,12 +512,12 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_SelfAnswered)
       { ExpectedStep::ExpectedRequest::readFromClient, IOState::Done, query.size() - 2 },
       { ExpectedStep::ExpectedRequest::closeClient, IOState::Done },
     };
-    s_processQuery = [](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       return ProcessQueryResult::Drop;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), 0U);
   }
 
@@ -517,13 +534,13 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_SelfAnswered)
       { ExpectedStep::ExpectedRequest::readFromClient, IOState::Done, 0 },
       { ExpectedStep::ExpectedRequest::closeClient, IOState::Done },
     };
-    s_processQuery = [](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       // Would be nicer to actually turn it into a response
       return ProcessQueryResult::SendAnswer;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), query.size());
     BOOST_CHECK(s_writeBuffer == query);
   }
@@ -549,7 +566,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_SelfAnswered)
       { ExpectedStep::ExpectedRequest::readFromClient, IOState::Done, 0 },
       { ExpectedStep::ExpectedRequest::closeClient, IOState::Done },
     };
-    s_processQuery = [](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       // Would be nicer to actually turn it into a response
       return ProcessQueryResult::SendAnswer;
     };
@@ -558,7 +575,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_SelfAnswered)
     dynamic_cast<MockupFDMultiplexer*>(threadData.mplexer.get())->setReady(-1);
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0) {
       threadData.mplexer->run(&now);
     }
@@ -577,12 +594,12 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_SelfAnswered)
       { ExpectedStep::ExpectedRequest::readFromClient, IOState::Done, query.size() - 2 },
       { ExpectedStep::ExpectedRequest::closeClient, IOState::Done },
     };
-    s_processQuery = [](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       throw std::runtime_error("Something unexpected happened");
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), 0U);
   }
 
@@ -604,13 +621,13 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_SelfAnswered)
     s_steps.push_back({ ExpectedStep::ExpectedRequest::readFromClient, IOState::Done, 0 });
     s_steps.push_back({ ExpectedStep::ExpectedRequest::closeClient, IOState::Done });
 
-    s_processQuery = [](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       // Would be nicer to actually turn it into a response
       return ProcessQueryResult::SendAnswer;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), query.size() * count);
 #endif
   }
@@ -626,7 +643,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_SelfAnswered)
       { ExpectedStep::ExpectedRequest::readFromClient, IOState::NeedRead, query.size() - 2 - 2 },
       { ExpectedStep::ExpectedRequest::closeClient, IOState::Done },
     };
-    s_processQuery = [](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       /* should not be reached */
       BOOST_CHECK(false);
       return ProcessQueryResult::SendAnswer;
@@ -636,7 +653,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_SelfAnswered)
     dynamic_cast<MockupFDMultiplexer*>(threadData.mplexer.get())->setNotReady(-1);
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(threadData.mplexer->run(&now), 0);
     struct timeval later = now;
     later.tv_sec += g_tcpRecvTimeout + 1;
@@ -664,7 +681,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_SelfAnswered)
       { ExpectedStep::ExpectedRequest::writeToClient, IOState::NeedWrite, 1 },
       { ExpectedStep::ExpectedRequest::closeClient, IOState::Done },
     };
-    s_processQuery = [](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       return ProcessQueryResult::SendAnswer;
     };
 
@@ -672,7 +689,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_SelfAnswered)
     dynamic_cast<MockupFDMultiplexer*>(threadData.mplexer.get())->setNotReady(-1);
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(threadData.mplexer->run(&now), 0);
     struct timeval later = now;
     later.tv_sec += g_tcpRecvTimeout + 1;
@@ -700,20 +717,20 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_SelfAnswered)
       { ExpectedStep::ExpectedRequest::writeToClient, IOState::Done, 0 },
       { ExpectedStep::ExpectedRequest::closeClient, IOState::Done },
     };
-    s_processQuery = [](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       return ProcessQueryResult::SendAnswer;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), 0U);
   }
 }
 
-BOOST_AUTO_TEST_CASE(test_IncomingConnectionWithProxyProtocol_SelfAnswered)
+BOOST_FIXTURE_TEST_CASE(test_IncomingConnectionWithProxyProtocol_SelfAnswered, TestFixture)
 {
   auto local = getBackendAddress("1", 80);
-  ClientState localCS(local, true, false, false, "", {});
+  ClientState localCS(local, true, false, 0, "", {}, true);
   auto tlsCtx = std::make_shared<MockupTLSCtx>();
   localCS.tlsFrontend = std::make_shared<TLSFrontend>(tlsCtx);
 
@@ -758,7 +775,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionWithProxyProtocol_SelfAnswered)
       { ExpectedStep::ExpectedRequest::readFromClient, IOState::Done, 0 },
       { ExpectedStep::ExpectedRequest::closeClient, IOState::Done },
     };
-    s_processQuery = [](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       return ProcessQueryResult::SendAnswer;
     };
 
@@ -766,7 +783,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionWithProxyProtocol_SelfAnswered)
     dynamic_cast<MockupFDMultiplexer*>(threadData.mplexer.get())->setNotReady(-1);
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(threadData.mplexer->run(&now), 0);
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), query.size() * 2U);
   }
@@ -788,12 +805,12 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionWithProxyProtocol_SelfAnswered)
       { ExpectedStep::ExpectedRequest::readFromClient, IOState::Done, s_proxyProtocolMinimumHeaderSize },
       { ExpectedStep::ExpectedRequest::closeClient, IOState::Done },
     };
-    s_processQuery = [](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       return ProcessQueryResult::SendAnswer;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
 
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), 0U);
   }
@@ -815,7 +832,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionWithProxyProtocol_SelfAnswered)
       { ExpectedStep::ExpectedRequest::readFromClient, IOState::NeedRead, proxyPayload.size() - s_proxyProtocolMinimumHeaderSize - 1},
       { ExpectedStep::ExpectedRequest::closeClient, IOState::Done },
     };
-    s_processQuery = [](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       return ProcessQueryResult::SendAnswer;
     };
 
@@ -823,7 +840,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionWithProxyProtocol_SelfAnswered)
     dynamic_cast<MockupFDMultiplexer*>(threadData.mplexer.get())->setNotReady(-1);
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(threadData.mplexer->run(&now), 0);
     struct timeval later = now;
     later.tv_sec += g_tcpRecvTimeout + 1;
@@ -840,10 +857,10 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionWithProxyProtocol_SelfAnswered)
   }
 }
 
-BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
+BOOST_FIXTURE_TEST_CASE(test_IncomingConnection_BackendNoOOOR, TestFixture)
 {
   auto local = getBackendAddress("1", 80);
-  ClientState localCS(local, true, false, false, "", {});
+  ClientState localCS(local, true, false, 0, "", {}, true);
   auto tlsCtx = std::make_shared<MockupTLSCtx>();
   localCS.tlsFrontend = std::make_shared<TLSFrontend>(tlsCtx);
 
@@ -894,16 +911,16 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
       /* closing a connection to the backend */
       { ExpectedStep::ExpectedRequest::closeBackend, IOState::Done },
     };
-    s_processQuery = [backend](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       selectedBackend = backend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), query.size());
     BOOST_CHECK(s_writeBuffer == query);
     BOOST_CHECK_EQUAL(s_backendWriteBuffer.size(), query.size());
@@ -934,16 +951,16 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
       /* closing a connection to the backend */
       { ExpectedStep::ExpectedRequest::closeBackend, IOState::Done },
     };
-    s_processQuery = [backend](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       selectedBackend = backend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       throw std::runtime_error("Unexpected error while processing the response");
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), 0U);
     BOOST_CHECK_EQUAL(s_backendWriteBuffer.size(), query.size());
     BOOST_CHECK(s_backendWriteBuffer == query);
@@ -973,16 +990,16 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
       /* closing a connection to the backend */
       { ExpectedStep::ExpectedRequest::closeBackend, IOState::Done },
     };
-    s_processQuery = [backend](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       selectedBackend = backend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return false;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), 0U);
     BOOST_CHECK_EQUAL(s_backendWriteBuffer.size(), query.size());
     BOOST_CHECK(s_backendWriteBuffer == query);
@@ -1016,16 +1033,16 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
       /* closing a connection to the backend */
       { ExpectedStep::ExpectedRequest::closeBackend, IOState::Done },
     };
-    s_processQuery = [backend](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       selectedBackend = backend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), 0U);
     BOOST_CHECK_EQUAL(s_backendWriteBuffer.size(), query.size());
     BOOST_CHECK(s_backendWriteBuffer == query);
@@ -1044,15 +1061,15 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
       /* closing client connection */
       { ExpectedStep::ExpectedRequest::closeClient, IOState::Done },
     };
-    s_processQuery = [](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       return ProcessQueryResult::SendAnswer;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), 0U);
     BOOST_CHECK_EQUAL(s_backendWriteBuffer.size(), 0U);
     BOOST_CHECK_EQUAL(backend->outstanding.load(), 0U);
@@ -1081,16 +1098,16 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
       /* closing backend connection */
       { ExpectedStep::ExpectedRequest::closeBackend, IOState::Done },
     };
-    s_processQuery = [backend](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       selectedBackend = backend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), 0U);
     BOOST_CHECK_EQUAL(s_backendWriteBuffer.size(), query.size());
     BOOST_CHECK_EQUAL(backend->outstanding.load(), 0U);
@@ -1149,18 +1166,18 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
       { ExpectedStep::ExpectedRequest::closeBackend, IOState::Done },
     };
 
-    s_processQuery = [backend](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       selectedBackend = backend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     /* set the incoming descriptor as ready! */
     dynamic_cast<MockupFDMultiplexer*>(threadData.mplexer.get())->setReady(-1);
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0) {
       threadData.mplexer->run(&now);
     }
@@ -1211,17 +1228,17 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
       { ExpectedStep::ExpectedRequest::closeClient, IOState::Done },
     };
 
-    s_processQuery = [backend](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
 
       selectedBackend = backend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), 0U);
     BOOST_CHECK_EQUAL(s_backendWriteBuffer.size(), 0U);
     BOOST_CHECK_EQUAL(backend->outstanding.load(), 0U);
@@ -1247,17 +1264,17 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
       { ExpectedStep::ExpectedRequest::closeBackend, IOState::Done },
     };
 
-    s_processQuery = [backend](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
 
       selectedBackend = backend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     struct timeval later = now;
     later.tv_sec += backend->d_config.tcpSendTimeout + 1;
     auto expiredWriteConns = threadData.mplexer->getTimeouts(later, true);
@@ -1294,16 +1311,16 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
       { ExpectedStep::ExpectedRequest::closeBackend, IOState::Done },
     };
 
-    s_processQuery = [backend](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       selectedBackend = backend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     struct timeval later = now;
     later.tv_sec += backend->d_config.tcpRecvTimeout + 1;
     auto expiredConns = threadData.mplexer->getTimeouts(later, false);
@@ -1351,16 +1368,16 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
       { ExpectedStep::ExpectedRequest::closeBackend, IOState::Done },
     };
 
-    s_processQuery = [backend](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       selectedBackend = backend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), 0U);
     BOOST_CHECK_EQUAL(s_backendWriteBuffer.size(), 0U);
     BOOST_CHECK_EQUAL(backend->outstanding.load(), 0U);
@@ -1407,16 +1424,16 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
       { ExpectedStep::ExpectedRequest::closeBackend, IOState::Done },
     };
 
-    s_processQuery = [backend](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       selectedBackend = backend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), query.size());
     BOOST_CHECK(s_writeBuffer == query);
     BOOST_CHECK_EQUAL(s_backendWriteBuffer.size(), query.size());
@@ -1466,16 +1483,16 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
       { ExpectedStep::ExpectedRequest::closeClient, IOState::Done },
     };
 
-    s_processQuery = [backend](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       selectedBackend = backend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), 0U);
     BOOST_CHECK_EQUAL(s_backendWriteBuffer.size(), 0U);
     BOOST_CHECK_EQUAL(backend->outstanding.load(), 0U);
@@ -1518,16 +1535,16 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
       { ExpectedStep::ExpectedRequest::closeBackend, IOState::Done },
     };
 
-    s_processQuery = [backend](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       selectedBackend = backend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), 0U);
     BOOST_CHECK_EQUAL(s_backendWriteBuffer.size(), query.size() * backend->d_config.d_retries);
     BOOST_CHECK_EQUAL(backend->outstanding.load(), 0U);
@@ -1578,16 +1595,16 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
       { ExpectedStep::ExpectedRequest::closeBackend, IOState::Done },
     };
 
-    s_processQuery = [backend](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       selectedBackend = backend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), query.size());
     BOOST_CHECK(s_writeBuffer == query);
     BOOST_CHECK_EQUAL(s_backendWriteBuffer.size(), query.size() * backend->d_config.d_retries);
@@ -1619,16 +1636,16 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
       { ExpectedStep::ExpectedRequest::closeBackend, IOState::Done },
     };
 
-    s_processQuery = [backend](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       selectedBackend = backend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), 0U);
     BOOST_CHECK_EQUAL(s_backendWriteBuffer.size(), query.size());
     BOOST_CHECK(s_backendWriteBuffer == query);
@@ -1681,16 +1698,16 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
     /* close the connection with the client */
     s_steps.push_back({ ExpectedStep::ExpectedRequest::closeClient, IOState::Done });
 
-    s_processQuery = [backend](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       selectedBackend = backend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), query.size() * count);
     BOOST_CHECK_EQUAL(backend->outstanding.load(), 0U);
 
@@ -1701,12 +1718,49 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
 #endif
   }
 
+  {
+    /* 2 queries on the same connection, asynchronously handled, check that we only read the first one (no OOOR as maxInFlight is 0) */
+    TEST_INIT("=> 2 queries on the same connection, async");
+
+    size_t count = 2;
+
+    s_readBuffer = query;
+
+    for (size_t idx = 0; idx < count; idx++) {
+      appendPayloadEditingID(s_readBuffer, query, idx);
+      appendPayloadEditingID(s_backendReadBuffer, query, idx);
+    }
+
+    s_steps = { { ExpectedStep::ExpectedRequest::handshakeClient, IOState::Done },
+                { ExpectedStep::ExpectedRequest::readFromClient, IOState::Done, 2 },
+                { ExpectedStep::ExpectedRequest::readFromClient, IOState::Done, query.size() - 2 },
+                /* close the connection with the client */
+                { ExpectedStep::ExpectedRequest::closeClient, IOState::Done }
+    };
+
+    s_processQuery = [backend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+      selectedBackend = backend;
+      dq.asynchronous = true;
+      /* note that we do nothing with the query, we just tell the frontend it was dealt with */
+      return ProcessQueryResult::Asynchronous;
+    };
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
+      return true;
+    };
+
+    auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
+    state->handleIO();
+    BOOST_CHECK_EQUAL(backend->outstanding.load(), 0U);
+
+    /* we need to clear them now, otherwise we end up with dangling pointers to the steps via the TLS context, etc */
+    IncomingTCPConnectionState::clearAllDownstreamConnections();
+  }
 }
 
-BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
+BOOST_FIXTURE_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR, TestFixture)
 {
   auto local = getBackendAddress("1", 80);
-  ClientState localCS(local, true, false, false, "", {});
+  ClientState localCS(local, true, false, 0, "", {}, true);
   /* enable out-of-order on the front side */
   localCS.d_maxInFlightQueriesPerConn = 65536;
 
@@ -1870,16 +1924,16 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
       { ExpectedStep::ExpectedRequest::closeBackend, IOState::Done },
     };
 
-    s_processQuery = [backend](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       selectedBackend = backend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0) {
       threadData.mplexer->run(&now);
     }
@@ -1993,7 +2047,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
       { ExpectedStep::ExpectedRequest::closeBackend, IOState::Done },
     };
 
-    s_processQuery = [backend,&responses](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend,&responses](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       static size_t count = 0;
       if (count++ == 3) {
         /* self answered */
@@ -2006,12 +2060,12 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
       selectedBackend = backend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
 
     while (!timeout && (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0)) {
       threadData.mplexer->run(&now);
@@ -2182,16 +2236,16 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
       { ExpectedStep::ExpectedRequest::closeClient, IOState::Done },
     };
 
-    s_processQuery = [backend](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       selectedBackend = backend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
 
     while (!timeout && (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0)) {
       threadData.mplexer->run(&now);
@@ -2254,7 +2308,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
     };
 
     counter = 0;
-    s_processQuery = [backend,&counter](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend,&counter](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       if (counter == 0) {
         ++counter;
         selectedBackend = backend;
@@ -2262,12 +2316,12 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
       }
       return ProcessQueryResult::Drop;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (!timeout && (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0)) {
       threadData.mplexer->run(&now);
     }
@@ -2337,7 +2391,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
     };
 
     counter = 0;
-    s_processQuery = [backend,&counter](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend,&counter](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       if (counter == 0) {
         ++counter;
         selectedBackend = backend;
@@ -2345,12 +2399,12 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
       }
       return ProcessQueryResult::Drop;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while ((threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0)) {
       threadData.mplexer->run(&now);
     }
@@ -2458,16 +2512,16 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
       { ExpectedStep::ExpectedRequest::closeClient, IOState::Done, 0 },
     };
 
-    s_processQuery = [backend](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       selectedBackend = backend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (!timeout && (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0)) {
       threadData.mplexer->run(&now);
     }
@@ -2610,16 +2664,16 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
       { ExpectedStep::ExpectedRequest::closeClient, IOState::Done, 0 },
     };
 
-    s_processQuery = [backend](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       selectedBackend = backend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0) {
       threadData.mplexer->run(&now);
     }
@@ -2817,16 +2871,16 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
       { ExpectedStep::ExpectedRequest::closeBackend, IOState::Done },
     };
 
-    s_processQuery = [backend](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       selectedBackend = backend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (!timeout && (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0)) {
       threadData.mplexer->run(&now);
     }
@@ -2991,16 +3045,16 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
       { ExpectedStep::ExpectedRequest::closeBackend, IOState::Done },
     };
 
-    s_processQuery = [proxyEnabledBackend](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [proxyEnabledBackend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       selectedBackend = proxyEnabledBackend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (!timeout && (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0)) {
       threadData.mplexer->run(&now);
     }
@@ -3255,16 +3309,16 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
       { ExpectedStep::ExpectedRequest::closeBackend, IOState::Done },
     };
 
-    s_processQuery = [backend](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       selectedBackend = backend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (!timeout && (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0)) {
       threadData.mplexer->run(&now);
     }
@@ -3381,16 +3435,16 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
       { ExpectedStep::ExpectedRequest::closeClient, IOState::Done, 0 },
     };
 
-    s_processQuery = [proxyEnabledBackend](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [proxyEnabledBackend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       selectedBackend = proxyEnabledBackend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0) {
       threadData.mplexer->run(&now);
     }
@@ -3466,16 +3520,16 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
       { ExpectedStep::ExpectedRequest::closeClient, IOState::Done, 0 },
     };
 
-    s_processQuery = [proxyEnabledBackend](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [proxyEnabledBackend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       selectedBackend = proxyEnabledBackend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0) {
       threadData.mplexer->run(&now);
     }
@@ -3531,16 +3585,16 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
       { ExpectedStep::ExpectedRequest::closeBackend, IOState::Done, 0 },
     };
 
-    s_processQuery = [backend](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       selectedBackend = backend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (!timeout && (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0)) {
       threadData.mplexer->run(&now);
     }
@@ -3565,8 +3619,8 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
     g_tcpRecvTimeout = 2;
 
     /* we need to clear them now, otherwise we end up with dangling pointers to the steps via the TLS context, etc */
-    /* we have one connection to clear, no proxy protocol */
-    BOOST_CHECK_EQUAL(IncomingTCPConnectionState::clearAllDownstreamConnections(), 1U);
+    /* we have no connection to clear, because there was a timeout! */
+    BOOST_CHECK_EQUAL(IncomingTCPConnectionState::clearAllDownstreamConnections(), 0U);
   }
 
   {
@@ -3722,16 +3776,16 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
       { ExpectedStep::ExpectedRequest::closeBackend, IOState::Done },
     };
 
-    s_processQuery = [backend1](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend1](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       selectedBackend = backend1;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0) {
       threadData.mplexer->run(&now);
     }
@@ -3807,16 +3861,16 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
       { ExpectedStep::ExpectedRequest::closeClient, IOState::Done },
     };
 
-    s_processQuery = [backend](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       selectedBackend = backend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (!timeout && (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0)) {
       threadData.mplexer->run(&now);
     }
@@ -3843,10 +3897,10 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
   }
 }
 
-BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendNotOOOR)
+BOOST_FIXTURE_TEST_CASE(test_IncomingConnectionOOOR_BackendNotOOOR, TestFixture)
 {
   auto local = getBackendAddress("1", 80);
-  ClientState localCS(local, true, false, false, "", {});
+  ClientState localCS(local, true, false, 0, "", {}, true);
   /* enable out-of-order on the front side */
   localCS.d_maxInFlightQueriesPerConn = 65536;
 
@@ -4039,16 +4093,16 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendNotOOOR)
       { ExpectedStep::ExpectedRequest::closeBackend, IOState::Done },
     };
 
-    s_processQuery = [backend](DNSQuestion& dq, ClientState& cs, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+    s_processQuery = [backend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
       selectedBackend = backend;
       return ProcessQueryResult::PassToBackend;
     };
-    s_processResponse = [](PacketBuffer& response, LocalStateHolder<vector<DNSDistResponseRuleAction> >& localRespRuleActions, DNSResponse& dr, bool muted) -> bool {
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
       return true;
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0) {
       threadData.mplexer->run(&now);
     }
@@ -4061,6 +4115,65 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendNotOOOR)
 
     /* we need to clear them now, otherwise we end up with dangling pointers to the steps via the TLS context, etc */
     BOOST_CHECK_EQUAL(IncomingTCPConnectionState::clearAllDownstreamConnections(), 5U);
+  }
+
+  {
+    /* 2 queries on the same connection, asynchronously handled, check that we only read all of them (OOOR as maxInFlight is 65535) */
+    TEST_INIT("=> 2 queries on the same connection, async with OOOR");
+
+    size_t count = 2;
+
+    s_readBuffer = queries.at(0);
+
+    for (size_t idx = 0; idx < count; idx++) {
+      appendPayloadEditingID(s_readBuffer, queries.at(idx), idx);
+      appendPayloadEditingID(s_backendReadBuffer, queries.at(idx), idx);
+    }
+
+    bool timeout = false;
+    s_steps = { { ExpectedStep::ExpectedRequest::handshakeClient, IOState::Done },
+                { ExpectedStep::ExpectedRequest::readFromClient, IOState::Done, 2 },
+                { ExpectedStep::ExpectedRequest::readFromClient, IOState::Done, queries.at(0).size() - 2 },
+                { ExpectedStep::ExpectedRequest::readFromClient, IOState::Done, 2 },
+                { ExpectedStep::ExpectedRequest::readFromClient, IOState::Done, queries.at(1).size() - 2 },
+                { ExpectedStep::ExpectedRequest::readFromClient, IOState::NeedRead, 0, [&timeout](int desc) {
+                  timeout = true;
+                }},
+                /* close the connection with the client */
+                { ExpectedStep::ExpectedRequest::closeClient, IOState::Done }
+    };
+
+    s_processQuery = [backend](DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend) -> ProcessQueryResult {
+      selectedBackend = backend;
+      dq.asynchronous = true;
+      /* note that we do nothing with the query, we just tell the frontend it was dealt with */
+      return ProcessQueryResult::Asynchronous;
+    };
+    s_processResponse = [](PacketBuffer& response, DNSResponse& dr, bool muted) -> bool {
+      return true;
+    };
+
+    auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
+    state->handleIO();
+    while (!timeout && (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0)) {
+      threadData.mplexer->run(&now);
+    }
+
+    struct timeval later = now;
+    later.tv_sec += g_tcpRecvTimeout + 1;
+    auto expiredConns = threadData.mplexer->getTimeouts(later);
+    BOOST_CHECK_EQUAL(expiredConns.size(), 1U);
+    for (const auto& cbData : expiredConns) {
+      if (cbData.second.type() == typeid(std::shared_ptr<IncomingTCPConnectionState>)) {
+        auto cbState = boost::any_cast<std::shared_ptr<IncomingTCPConnectionState>>(cbData.second);
+        cbState->handleTimeout(cbState, false);
+      }
+    }
+
+    BOOST_CHECK_EQUAL(backend->outstanding.load(), 0U);
+
+    /* we need to clear them now, otherwise we end up with dangling pointers to the steps via the TLS context, etc */
+    IncomingTCPConnectionState::clearAllDownstreamConnections();
   }
 }
 

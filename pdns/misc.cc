@@ -19,15 +19,17 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
+
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
+
 #include <sys/param.h>
 #include <sys/socket.h>
 #include <fcntl.h>
 #include <netdb.h>
 #include <sys/time.h>
-#include <time.h>
+#include <ctime>
 #include <sys/resource.h>
 #include <netinet/in.h>
 #include <sys/un.h>
@@ -35,6 +37,7 @@
 #include <fstream>
 #include "misc.hh"
 #include <vector>
+#include <string>
 #include <sstream>
 #include <cerrno>
 #include <cstring>
@@ -46,19 +49,17 @@
 #include <iomanip>
 #include <netinet/tcp.h>
 #include <optional>
-#include <string.h>
-#include <stdlib.h>
-#include <stdio.h>
+#include <cstdlib>
+#include <cstdio>
 #include "pdnsexception.hh"
-#include <sys/types.h>
 #include <boost/algorithm/string.hpp>
 #include <boost/format.hpp>
 #include "iputils.hh"
 #include "dnsparser.hh"
-#include <sys/types.h>
+#include "dns_random.hh"
 #include <pwd.h>
 #include <grp.h>
-#include <limits.h>
+#include <climits>
 #ifdef __FreeBSD__
 #  include <pthread_np.h>
 #endif
@@ -67,24 +68,28 @@
 #  include <sched.h>
 #endif
 
-size_t writen2(int fd, const void *buf, size_t count)
+#if defined(HAVE_LIBCRYPTO)
+#include <openssl/err.h>
+#endif // HAVE_LIBCRYPTO
+
+size_t writen2(int fileDesc, const void *buf, size_t count)
 {
-  const char *ptr = reinterpret_cast<const char*>(buf);
+  const char *ptr = static_cast<const char*>(buf);
   const char *eptr = ptr + count;
 
-  ssize_t res;
-  while(ptr != eptr) {
-    res = ::write(fd, ptr, eptr - ptr);
-    if(res < 0) {
-      if (errno == EAGAIN)
+  while (ptr != eptr) {
+    auto res = ::write(fileDesc, ptr, eptr - ptr);
+    if (res < 0) {
+      if (errno == EAGAIN) {
         throw std::runtime_error("used writen2 on non-blocking socket, got EAGAIN");
-      else
-        unixDie("failed in writen2");
+      }
+      unixDie("failed in writen2");
     }
-    else if (res == 0)
+    else if (res == 0) {
       throw std::runtime_error("could not write all bytes, got eof in writen2");
+    }
 
-    ptr += (size_t) res;
+    ptr += res;
   }
 
   return count;
@@ -225,70 +230,120 @@ auto pdns::getMessageFromErrno(const int errnum) -> std::string
   return message;
 }
 
+#if defined(HAVE_LIBCRYPTO)
+auto pdns::OpenSSL::error(const std::string& errorMessage) -> std::runtime_error
+{
+  unsigned long errorCode = 0;
+  auto fullErrorMessage{errorMessage};
+#if OPENSSL_VERSION_MAJOR >= 3
+  const char* filename = nullptr;
+  const char* functionName = nullptr;
+  int lineNumber = 0;
+  while ((errorCode = ERR_get_error_all(&filename, &lineNumber, &functionName, nullptr, nullptr)) != 0) {
+    fullErrorMessage += std::string(": ") + std::to_string(errorCode);
+
+    const auto* lib = ERR_lib_error_string(errorCode);
+    if (lib != nullptr) {
+      fullErrorMessage += std::string(":") + lib;
+    }
+
+    const auto* reason = ERR_reason_error_string(errorCode);
+    if (reason != nullptr) {
+      fullErrorMessage += std::string("::") + reason;
+    }
+
+    if (filename != nullptr) {
+      fullErrorMessage += std::string(" - ") + filename;
+    }
+    if (lineNumber != 0) {
+      fullErrorMessage += std::string(":") + std::to_string(lineNumber);
+    }
+    if (functionName != nullptr) {
+      fullErrorMessage += std::string(" - ") + functionName;
+    }
+  }
+#else
+  while ((errorCode = ERR_get_error()) != 0) {
+    fullErrorMessage += std::string(": ") + std::to_string(errorCode);
+
+    const auto* lib = ERR_lib_error_string(errorCode);
+    if (lib != nullptr) {
+      fullErrorMessage += std::string(":") + lib;
+    }
+
+    const auto* func = ERR_func_error_string(errorCode);
+    if (func != nullptr) {
+      fullErrorMessage += std::string(":") + func;
+    }
+
+    const auto* reason = ERR_reason_error_string(errorCode);
+    if (reason != nullptr) {
+      fullErrorMessage += std::string("::") + reason;
+    }
+  }
+#endif
+  return std::runtime_error(fullErrorMessage);
+}
+
+auto pdns::OpenSSL::error(const std::string& componentName, const std::string& errorMessage) -> std::runtime_error
+{
+  return pdns::OpenSSL::error(componentName + ": " + errorMessage);
+}
+#endif // HAVE_LIBCRYPTO
+
 string nowTime()
 {
   time_t now = time(nullptr);
-  struct tm tm;
-  localtime_r(&now, &tm);
-  char buffer[30];
+  struct tm theTime{};
+  localtime_r(&now, &theTime);
+  std::array<char, 30> buffer{};
   // YYYY-mm-dd HH:MM:SS TZOFF
-  size_t ret = strftime(buffer, sizeof(buffer), "%F %T %z", &tm);
+  size_t ret = strftime(buffer.data(), buffer.size(), "%F %T %z", &theTime);
   if (ret == 0) {
     buffer[0] = '\0';
   }
-  return string(buffer);
+  return {buffer.data()};
 }
 
-uint16_t getShort(const unsigned char *p)
+static bool ciEqual(const string& lhs, const string& rhs)
 {
-  return p[0] * 256 + p[1];
-}
-
-
-uint16_t getShort(const char *p)
-{
-  return getShort((const unsigned char *)p);
-}
-
-uint32_t getLong(const unsigned char* p)
-{
-  return (p[0]<<24) + (p[1]<<16) + (p[2]<<8) + p[3];
-}
-
-uint32_t getLong(const char* p)
-{
-  return getLong(reinterpret_cast<const unsigned char *>(p));
-}
-
-static bool ciEqual(const string& a, const string& b)
-{
-  if(a.size()!=b.size())
+  if (lhs.size() != rhs.size()) {
     return false;
+  }
 
-  string::size_type pos=0, epos=a.size();
-  for(;pos < epos; ++pos)
-    if(dns_tolower(a[pos])!=dns_tolower(b[pos]))
+  string::size_type pos = 0;
+  const string::size_type epos = lhs.size();
+  for (; pos < epos; ++pos) {
+    if (dns_tolower(lhs[pos]) != dns_tolower(rhs[pos])) {
       return false;
+    }
+  }
   return true;
 }
 
 /** does domain end on suffix? Is smart about "wwwds9a.nl" "ds9a.nl" not matching */
 static bool endsOn(const string &domain, const string &suffix)
 {
-  if( suffix.empty() || ciEqual(domain, suffix) )
+  if( suffix.empty() || ciEqual(domain, suffix) ) {
     return true;
+  }
 
-  if(domain.size()<=suffix.size())
+  if(domain.size() <= suffix.size()) {
     return false;
+  }
 
-  string::size_type dpos=domain.size()-suffix.size()-1, spos=0;
+  string::size_type dpos = domain.size() - suffix.size() - 1;
+  string::size_type spos = 0;
 
-  if(domain[dpos++]!='.')
+  if (domain[dpos++] != '.') {
     return false;
+  }
 
-  for(; dpos < domain.size(); ++dpos, ++spos)
-    if(dns_tolower(domain[dpos]) != dns_tolower(suffix[spos]))
+  for(; dpos < domain.size(); ++dpos, ++spos) {
+    if (dns_tolower(domain[dpos]) != dns_tolower(suffix[spos])) {
       return false;
+    }
+  }
 
   return true;
 }
@@ -296,90 +351,48 @@ static bool endsOn(const string &domain, const string &suffix)
 /** strips a domain suffix from a domain, returns true if it stripped */
 bool stripDomainSuffix(string *qname, const string &domain)
 {
-  if(!endsOn(*qname, domain))
+  if (!endsOn(*qname, domain)) {
     return false;
+  }
 
-  if(toLower(*qname)==toLower(domain))
+  if (toLower(*qname) == toLower(domain)) {
     *qname="@";
+  }
   else {
-    if((*qname)[qname->size()-domain.size()-1]!='.')
+    if ((*qname)[qname->size() - domain.size() - 1] != '.') {
       return false;
+    }
 
-    qname->resize(qname->size()-domain.size()-1);
+    qname->resize(qname->size() - domain.size()-1);
   }
   return true;
 }
 
-static void parseService4(const string& descr, ServiceTuple& st)
+// returns -1 in case if error, 0 if no data is available, 1 if there is. In the first two cases, errno is set
+int waitForData(int fileDesc, int seconds, int useconds)
 {
-  vector<string> parts;
-  stringtok(parts, descr, ":");
-  if (parts.empty()) {
-    throw PDNSException("Unable to parse '" + descr + "' as a service");
-  }
-  st.host = parts[0];
-  if (parts.size() > 1) {
-    pdns::checked_stoi_into(st.port, parts[1]);
-  }
+  return waitForRWData(fileDesc, true, seconds, useconds);
 }
 
-static void parseService6(const string& descr, ServiceTuple& st)
+int waitForRWData(int fileDesc, bool waitForRead, int seconds, int useconds, bool* error, bool* disconnected)
 {
-  string::size_type pos = descr.find(']');
-  if (pos == string::npos) {
-    throw PDNSException("Unable to parse '" + descr + "' as an IPv6 service");
-  }
+  struct pollfd pfd{};
+  memset(&pfd, 0, sizeof(pfd));
+  pfd.fd = fileDesc;
 
-  st.host = descr.substr(1, pos - 1);
-  if (pos + 2 < descr.length()) {
-    pdns::checked_stoi_into(st.port, descr.substr(pos + 2));
-  }
-}
-
-void parseService(const string &descr, ServiceTuple &st)
-{
-  if(descr.empty())
-    throw PDNSException("Unable to parse '"+descr+"' as a service");
-
-  vector<string> parts;
-  stringtok(parts, descr, ":");
-
-  if(descr[0]=='[') {
-    parseService6(descr, st);
-  }
-  else if(descr[0]==':' || parts.size() > 2 || descr.find("::") != string::npos) {
-    st.host=descr;
+  if (waitForRead) {
+    pfd.events = POLLIN;
   }
   else {
-    parseService4(descr, st);
+    pfd.events = POLLOUT;
   }
-}
 
-// returns -1 in case if error, 0 if no data is available, 1 if there is. In the first two cases, errno is set
-int waitForData(int fd, int seconds, int useconds)
-{
-  return waitForRWData(fd, true, seconds, useconds);
-}
-
-int waitForRWData(int fd, bool waitForRead, int seconds, int useconds, bool* error, bool* disconnected)
-{
-  int ret;
-
-  struct pollfd pfd;
-  memset(&pfd, 0, sizeof(pfd));
-  pfd.fd = fd;
-
-  if(waitForRead)
-    pfd.events=POLLIN;
-  else
-    pfd.events=POLLOUT;
-
-  ret = poll(&pfd, 1, seconds * 1000 + useconds/1000);
+  int ret = poll(&pfd, 1, seconds * 1000 + useconds/1000);
   if (ret > 0) {
-    if (error && (pfd.revents & POLLERR)) {
+    if ((error != nullptr) && (pfd.revents & POLLERR) != 0) {
       *error = true;
     }
-    if (disconnected && (pfd.revents & POLLHUP)) {
+    if ((disconnected != nullptr) && (pfd.revents & POLLHUP) != 0) {
       *disconnected = true;
     }
   }
@@ -420,41 +433,46 @@ int waitForMultiData(const set<int>& fds, const int seconds, const int useconds,
     }
   }
   set<int>::const_iterator it(pollinFDs.begin());
-  advance(it, random() % pollinFDs.size());
+  advance(it, dns_random(pollinFDs.size()));
   *fdOut = *it;
   return 1;
 }
 
 // returns -1 in case of error, 0 if no data is available, 1 if there is. In the first two cases, errno is set
-int waitFor2Data(int fd1, int fd2, int seconds, int useconds, int*fd)
+int waitFor2Data(int fd1, int fd2, int seconds, int useconds, int* fdPtr)
 {
-  int ret;
-
-  struct pollfd pfds[2];
-  memset(&pfds[0], 0, 2*sizeof(struct pollfd));
+  std::array<pollfd,2> pfds{};
+  memset(pfds.data(), 0, pfds.size() * sizeof(struct pollfd));
   pfds[0].fd = fd1;
   pfds[1].fd = fd2;
 
   pfds[0].events= pfds[1].events = POLLIN;
 
-  int nsocks = 1 + (fd2 >= 0); // fd2 can optionally be -1
+  int nsocks = 1 + static_cast<int>(fd2 >= 0); // fd2 can optionally be -1
 
-  if(seconds >= 0)
-    ret = poll(pfds, nsocks, seconds * 1000 + useconds/1000);
-  else
-    ret = poll(pfds, nsocks, -1);
-  if(!ret || ret < 0)
-    return ret;
-
-  if((pfds[0].revents & POLLIN) && !(pfds[1].revents & POLLIN))
-    *fd = pfds[0].fd;
-  else if((pfds[1].revents & POLLIN) && !(pfds[0].revents & POLLIN))
-    *fd = pfds[1].fd;
-  else if(ret == 2) {
-    *fd = pfds[random()%2].fd;
+  int ret{};
+  if (seconds >= 0) {
+    ret = poll(pfds.data(), nsocks, seconds * 1000 + useconds / 1000);
   }
-  else
-    *fd = -1; // should never happen
+  else {
+    ret = poll(pfds.data(), nsocks, -1);
+  }
+  if (ret <= 0) {
+    return ret;
+  }
+
+  if ((pfds[0].revents & POLLIN) != 0 && (pfds[1].revents & POLLIN) == 0) {
+    *fdPtr = pfds[0].fd;
+  }
+  else if ((pfds[1].revents & POLLIN) != 0 && (pfds[0].revents & POLLIN) == 0) {
+    *fdPtr = pfds[1].fd;
+  }
+  else if(ret == 2) {
+    *fdPtr = pfds.at(dns_random_uint32() % 2).fd;
+  }
+  else {
+    *fdPtr = -1; // should never happen
+  }
 
   return 1;
 }
@@ -477,7 +495,7 @@ string humanDuration(time_t passed)
   return ret.str();
 }
 
-const string unquotify(const string &item)
+string unquotify(const string &item)
 {
   if(item.size()<2)
     return item;
@@ -510,31 +528,46 @@ string urlEncode(const string &text)
   return ret;
 }
 
-string getHostname()
+static size_t getMaxHostNameSize()
 {
-#ifndef MAXHOSTNAMELEN
-#define MAXHOSTNAMELEN 255
+#if defined(HOST_NAME_MAX)
+  return HOST_NAME_MAX;
 #endif
 
-  char tmp[MAXHOSTNAMELEN];
-  if(gethostname(tmp, MAXHOSTNAMELEN))
-    return "UNKNOWN";
+#if defined(_SC_HOST_NAME_MAX)
+  auto tmp = sysconf(_SC_HOST_NAME_MAX);
+  if (tmp != -1) {
+    return tmp;
+  }
+#endif
 
-  return string(tmp);
+  const size_t maxHostNameSize = 255;
+  return maxHostNameSize;
 }
 
-string itoa(int i)
+std::optional<string> getHostname()
 {
-  ostringstream o;
-  o<<i;
-  return o.str();
+  const size_t maxHostNameBufSize = getMaxHostNameSize() + 1;
+  std::string hostname;
+  hostname.resize(maxHostNameBufSize, 0);
+
+  if (gethostname(hostname.data(), maxHostNameBufSize) == -1) {
+    return std::nullopt;
+  }
+
+  hostname.resize(strlen(hostname.c_str()));
+  return std::make_optional(hostname);
 }
 
-string uitoa(unsigned int i) // MSVC 6 doesn't grok overloading (un)signed
+std::string getCarbonHostName()
 {
-  ostringstream o;
-  o<<i;
-  return o.str();
+  auto hostname = getHostname();
+  if (!hostname.has_value()) {
+    throw std::runtime_error(stringerror());
+  }
+
+  boost::replace_all(*hostname, ".", "_");
+  return *hostname;
 }
 
 string bitFlip(const string &str)
@@ -547,28 +580,26 @@ string bitFlip(const string &str)
   return ret;
 }
 
-string stringerror(int err)
-{
-  return strerror(err);
-}
-
-string stringerror()
-{
-  return strerror(errno);
-}
-
 void cleanSlashes(string &str)
 {
-  string::const_iterator i;
   string out;
-  for(i=str.begin();i!=str.end();++i) {
-    if(*i=='/' && i!=str.begin() && *(i-1)=='/')
-      continue;
-    out.append(1,*i);
+  bool keepNextSlash = true;
+  for (const auto& value : str) {
+    if (value == '/') {
+      if (keepNextSlash) {
+        keepNextSlash = false;
+      }
+      else {
+        continue;
+      }
+    }
+    else {
+      keepNextSlash = true;
+    }
+    out.append(1, value);
   }
-  str=out;
+  str = std::move(out);
 }
-
 
 bool IpToU32(const string &str, uint32_t *ip)
 {
@@ -599,13 +630,13 @@ string U32ToIP(uint32_t val)
 
 string makeHexDump(const string& str)
 {
-  char tmp[5];
+  std::array<char, 5> tmp;
   string ret;
-  ret.reserve((int)(str.size()*2.2));
+  ret.reserve(static_cast<size_t>(str.size()*2.2));
 
-  for(char n : str) {
-    snprintf(tmp, sizeof(tmp), "%02x ", (unsigned char)n);
-    ret+=tmp;
+  for (char n : str) {
+    snprintf(tmp.data(), tmp.size(), "%02x ", static_cast<unsigned char>(n));
+    ret += tmp.data();
   }
   return ret;
 }
@@ -615,14 +646,17 @@ string makeBytesFromHex(const string &in) {
     throw std::range_error("odd number of bytes in hex string");
   }
   string ret;
-  ret.reserve(in.size());
-  unsigned int num;
-  for (size_t i = 0; i < in.size(); i+=2) {
-    string numStr = in.substr(i, 2);
-    num = 0;
-    sscanf(numStr.c_str(), "%02x", &num);
-    ret.push_back((uint8_t)num);
+  ret.reserve(in.size() / 2);
+
+  for (size_t i = 0; i < in.size(); i += 2) {
+    const auto numStr = in.substr(i, 2);
+    unsigned int num = 0;
+    if (sscanf(numStr.c_str(), "%02x", &num) != 1) {
+      throw std::range_error("Invalid value while parsing the hex string '" + in + "'");
+    }
+    ret.push_back(static_cast<uint8_t>(num));
   }
+
   return ret;
 }
 
@@ -638,7 +672,7 @@ void normalizeTV(struct timeval& tv)
   }
 }
 
-const struct timeval operator+(const struct timeval& lhs, const struct timeval& rhs)
+struct timeval operator+(const struct timeval& lhs, const struct timeval& rhs)
 {
   struct timeval ret;
   ret.tv_sec=lhs.tv_sec + rhs.tv_sec;
@@ -647,7 +681,7 @@ const struct timeval operator+(const struct timeval& lhs, const struct timeval& 
   return ret;
 }
 
-const struct timeval operator-(const struct timeval& lhs, const struct timeval& rhs)
+struct timeval operator-(const struct timeval& lhs, const struct timeval& rhs)
 {
   struct timeval ret;
   ret.tv_sec=lhs.tv_sec - rhs.tv_sec;
@@ -827,11 +861,11 @@ bool stringfgets(FILE* fp, std::string& line)
 bool readFileIfThere(const char* fname, std::string* line)
 {
   line->clear();
-  auto fp = std::unique_ptr<FILE, int(*)(FILE*)>(fopen(fname, "r"), fclose);
-  if (!fp) {
+  auto filePtr = pdns::UniqueFilePtr(fopen(fname, "r"));
+  if (!filePtr) {
     return false;
   }
-  return stringfgets(fp.get(), *line);
+  return stringfgets(filePtr.get(), *line);
 }
 
 Regex::Regex(const string &expr)
@@ -994,7 +1028,7 @@ bool isNonBlocking(int sock)
   return flags & O_NONBLOCK;
 }
 
-bool setReceiveSocketErrors(int sock, int af)
+bool setReceiveSocketErrors([[maybe_unused]] int sock, [[maybe_unused]] int af)
 {
 #ifdef __linux__
   int tmp = 1, ret;
@@ -1011,13 +1045,16 @@ bool setReceiveSocketErrors(int sock, int af)
 }
 
 // Closes a socket.
-int closesocket( int socket )
+int closesocket(int socket)
 {
-  int ret=::close(socket);
-  if(ret < 0 && errno == ECONNRESET) // see ticket 192, odd BSD behaviour
+  int ret = ::close(socket);
+  if(ret < 0 && errno == ECONNRESET) { // see ticket 192, odd BSD behaviour
     return 0;
-  if(ret < 0)
-    throw PDNSException("Error closing socket: "+stringerror());
+  }
+  if (ret < 0) {
+    int err = errno;
+    throw PDNSException("Error closing socket: " + stringerror(err));
+  }
   return ret;
 }
 
@@ -1136,7 +1173,7 @@ int getMACAddress(const ComboAddress& ca, char* dest, size_t destLen)
   return foundMAC ? 0 : ENOENT;
 }
 #else
-int getMACAddress(const ComboAddress& ca, char* dest, size_t len)
+int getMACAddress(const ComboAddress& /* ca */, char* /* dest */, size_t /* len */)
 {
   return ENOENT;
 }
@@ -1152,7 +1189,7 @@ string getMACAddress(const ComboAddress& ca)
   return ret;
 }
 
-uint64_t udpErrorStats(const std::string& str)
+uint64_t udpErrorStats([[maybe_unused]] const std::string& str)
 {
 #ifdef __linux__
   ifstream ifs("/proc/net/snmp");
@@ -1194,7 +1231,7 @@ uint64_t udpErrorStats(const std::string& str)
   return 0;
 }
 
-uint64_t udp6ErrorStats(const std::string& str)
+uint64_t udp6ErrorStats([[maybe_unused]] const std::string& str)
 {
 #ifdef __linux__
   const std::map<std::string, std::string> keys = {
@@ -1234,7 +1271,7 @@ uint64_t udp6ErrorStats(const std::string& str)
   return 0;
 }
 
-uint64_t tcpErrorStats(const std::string& str)
+uint64_t tcpErrorStats(const std::string& /* str */)
 {
 #ifdef __linux__
   ifstream ifs("/proc/net/netstat");
@@ -1259,7 +1296,7 @@ uint64_t tcpErrorStats(const std::string& str)
   return 0;
 }
 
-uint64_t getCPUIOWait(const std::string& str)
+uint64_t getCPUIOWait(const std::string& /* str */)
 {
 #ifdef __linux__
   ifstream ifs("/proc/stat");
@@ -1284,7 +1321,7 @@ uint64_t getCPUIOWait(const std::string& str)
   return 0;
 }
 
-uint64_t getCPUSteal(const std::string& str)
+uint64_t getCPUSteal(const std::string& /* str */)
 {
 #ifdef __linux__
   ifstream ifs("/proc/stat");
@@ -1348,30 +1385,29 @@ DNSName getTSIGAlgoName(TSIGHashEnum& algoEnum)
 uint64_t getOpenFileDescriptors(const std::string&)
 {
 #ifdef __linux__
-  DIR* dirhdl=opendir(("/proc/"+std::to_string(getpid())+"/fd/").c_str());
-  if(!dirhdl)
-    return 0;
-
-  struct dirent *entry;
-  int ret=0;
-  while((entry = readdir(dirhdl))) {
+  uint64_t nbFileDescriptors = 0;
+  const auto dirName = "/proc/" + std::to_string(getpid()) + "/fd/";
+  auto directoryError = pdns::visit_directory(dirName, [&nbFileDescriptors]([[maybe_unused]] ino_t inodeNumber, const std::string_view& name) {
     uint32_t num;
     try {
-      pdns::checked_stoi_into(num, entry->d_name);
+      pdns::checked_stoi_into(num, std::string(name));
+      if (std::to_string(num) == name) {
+        nbFileDescriptors++;
+      }
     } catch (...) {
-      continue; // was not a number.
+      // was not a number.
     }
-    if(std::to_string(num) == entry->d_name)
-      ret++;
+    return true;
+  });
+  if (directoryError) {
+    return 0U;
   }
-  closedir(dirhdl);
-  return ret;
-
+  return nbFileDescriptors;
 #elif defined(__OpenBSD__)
   // FreeBSD also has this in libopenbsd, but I don't know if that's available always
   return getdtablecount();
 #else
-  return 0;
+  return 0U;
 #endif
 }
 
@@ -1433,14 +1469,14 @@ uint64_t getCPUTimeSystem(const std::string&)
 
 double DiffTime(const struct timespec& first, const struct timespec& second)
 {
-  int seconds=second.tv_sec - first.tv_sec;
-  int nseconds=second.tv_nsec - first.tv_nsec;
+  auto seconds = second.tv_sec - first.tv_sec;
+  auto nseconds = second.tv_nsec - first.tv_nsec;
 
-  if(nseconds < 0) {
-    seconds-=1;
-    nseconds+=1000000000;
+  if (nseconds < 0) {
+    seconds -= 1;
+    nseconds += 1000000000;
   }
-  return seconds + nseconds/1000000000.0;
+  return static_cast<double>(seconds) + static_cast<double>(nseconds) / 1000000000.0;
 }
 
 double DiffTime(const struct timeval& first, const struct timeval& second)
@@ -1522,7 +1558,7 @@ bool isSettingThreadCPUAffinitySupported()
 #endif
 }
 
-int mapThreadToCPUList(pthread_t tid, const std::set<int>& cpus)
+int mapThreadToCPUList([[maybe_unused]] pthread_t tid, [[maybe_unused]] const std::set<int>& cpus)
 {
 #ifdef HAVE_PTHREAD_SETAFFINITY_NP
 #  ifdef __NetBSD__
@@ -1576,7 +1612,7 @@ std::vector<ComboAddress> getResolvers(const std::string& resolvConfPath)
     if (boost::starts_with(line, "nameserver ") || boost::starts_with(line, "nameserver\t")) {
       vector<string> parts;
       stringtok(parts, line, " \t,"); // be REALLY nice
-      for(vector<string>::const_iterator iter = parts.begin() + 1; iter != parts.end(); ++iter) {
+      for (auto iter = parts.begin() + 1; iter != parts.end(); ++iter) {
         try {
           results.emplace_back(*iter, 53);
         }
@@ -1590,7 +1626,7 @@ std::vector<ComboAddress> getResolvers(const std::string& resolvConfPath)
   return results;
 }
 
-size_t getPipeBufferSize(int fd)
+size_t getPipeBufferSize([[maybe_unused]] int fd)
 {
 #ifdef F_GETPIPE_SZ
   int res = fcntl(fd, F_GETPIPE_SZ);
@@ -1604,7 +1640,7 @@ size_t getPipeBufferSize(int fd)
 #endif /* F_GETPIPE_SZ */
 }
 
-bool setPipeBufferSize(int fd, size_t size)
+bool setPipeBufferSize([[maybe_unused]] int fd, [[maybe_unused]] size_t size)
 {
 #ifdef F_SETPIPE_SZ
   if (size > static_cast<size_t>(std::numeric_limits<int>::max())) {
@@ -1648,38 +1684,6 @@ DNSName reverseNameFromIP(const ComboAddress& ip)
   }
 
   throw std::runtime_error("Calling reverseNameFromIP() for an address which is neither an IPv4 nor an IPv6");
-}
-
-static size_t getMaxHostNameSize()
-{
-#if defined(HOST_NAME_MAX)
-  return HOST_NAME_MAX;
-#endif
-
-#if defined(_SC_HOST_NAME_MAX)
-  auto tmp = sysconf(_SC_HOST_NAME_MAX);
-  if (tmp != -1) {
-    return tmp;
-  }
-#endif
-
-  /* _POSIX_HOST_NAME_MAX */
-  return 255;
-}
-
-std::string getCarbonHostName()
-{
-  std::string hostname;
-  hostname.resize(getMaxHostNameSize() + 1, 0);
-
-  if (gethostname(const_cast<char*>(hostname.c_str()), hostname.size()) != 0) {
-    throw std::runtime_error(stringerror());
-  }
-
-  boost::replace_all(hostname, ".", "_");
-  hostname.resize(strlen(hostname.c_str()));
-
-  return hostname;
 }
 
 std::string makeLuaString(const std::string& in)
@@ -1743,4 +1747,58 @@ bool constantTimeStringEquals(const std::string& a, const std::string& b)
   return res == 0;
 #endif /* !HAVE_SODIUM_MEMCMP */
 #endif /* !HAVE_CRYPTO_MEMCMP */
+}
+
+namespace pdns
+{
+struct CloseDirDeleter
+{
+  void operator()(DIR* dir) const noexcept {
+    closedir(dir);
+  }
+};
+
+std::optional<std::string> visit_directory(const std::string& directory, const std::function<bool(ino_t inodeNumber, const std::string_view& name)>& visitor)
+{
+  auto dirHandle = std::unique_ptr<DIR, CloseDirDeleter>(opendir(directory.c_str()));
+  if (!dirHandle) {
+    auto err = errno;
+    return std::string("Error opening directory '" + directory + "': " + stringerror(err));
+  }
+
+  bool keepGoing = true;
+  struct dirent* ent = nullptr;
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): readdir is thread-safe nowadays and readdir_r is deprecated
+  while (keepGoing && (ent = readdir(dirHandle.get())) != nullptr) {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-array-to-pointer-decay: dirent API
+    auto name = std::string_view(ent->d_name, strlen(ent->d_name));
+    keepGoing = visitor(ent->d_ino, name);
+  }
+
+  return std::nullopt;
+}
+
+UniqueFilePtr openFileForWriting(const std::string& filePath, mode_t permissions, bool mustNotExist, bool appendIfExists)
+{
+  int flags = O_WRONLY | O_CREAT;
+  if (mustNotExist) {
+    flags |= O_EXCL;
+  }
+  else if (appendIfExists) {
+    flags |= O_APPEND;
+  }
+  int fileDesc = open(filePath.c_str(), flags, permissions);
+  if (fileDesc == -1) {
+    return {};
+  }
+  auto filePtr = pdns::UniqueFilePtr(fdopen(fileDesc, appendIfExists ? "a" : "w"));
+  if (!filePtr) {
+    auto error = errno;
+    close(fileDesc);
+    errno = error;
+    return {};
+  }
+  return filePtr;
+}
+
 }

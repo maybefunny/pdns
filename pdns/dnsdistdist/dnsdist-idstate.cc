@@ -1,75 +1,54 @@
+/*
+ * This file is part of PowerDNS or dnsdist.
+ * Copyright -- PowerDNS.COM B.V. and its contributors
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of version 2 of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * In addition, for the avoidance of any doubt, permission is granted to
+ * link this program with OpenSSL and to (re)distribute the binaries
+ * produced as the result of such linking.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
 
-#include "dnsdist.hh"
+#include "dnsdist-idstate.hh"
+#include "dnsdist-doh-common.hh"
+#include "doh3.hh"
+#include "doq.hh"
 
-DNSResponse makeDNSResponseFromIDState(IDState& ids, PacketBuffer& data)
+InternalQueryState InternalQueryState::partialCloneForXFR() const
 {
-  DNSResponse dr(&ids.qname, ids.qtype, ids.qclass, &ids.origDest, &ids.origRemote, data, ids.protocol, &ids.sentTime.d_start);
-  dr.origFlags = ids.origFlags;
-  dr.cacheFlags = ids.cacheFlags;
-  dr.ecsAdded = ids.ecsAdded;
-  dr.ednsAdded = ids.ednsAdded;
-  dr.useZeroScope = ids.useZeroScope;
-  dr.packetCache = std::move(ids.packetCache);
-  dr.delayMsec = ids.delayMsec;
-  dr.skipCache = ids.skipCache;
-  dr.cacheKey = ids.cacheKey;
-  dr.cacheKeyNoECS = ids.cacheKeyNoECS;
-  dr.cacheKeyUDP = ids.cacheKeyUDP;
-  dr.dnssecOK = ids.dnssecOK;
-  dr.tempFailureTTL = ids.tempFailureTTL;
-  dr.qTag = std::move(ids.qTag);
-  dr.subnet = std::move(ids.subnet);
-  dr.uniqueId = std::move(ids.uniqueId);
-
-  if (ids.dnsCryptQuery) {
-    dr.dnsCryptQuery = std::move(ids.dnsCryptQuery);
+  /* for XFR responses we cannot move the state from the query
+     because we usually have more than one response packet per query,
+     so we need to do a partial clone.
+  */
+  InternalQueryState ids;
+  ids.qtype = qtype;
+  ids.qclass = qclass;
+  ids.qname = qname;
+  ids.poolName = poolName;
+  ids.queryRealTime = queryRealTime;
+  ids.protocol = protocol;
+  ids.subnet = subnet;
+  ids.origRemote = origRemote;
+  ids.origDest = origDest;
+  ids.hopRemote = hopRemote;
+  ids.hopLocal = hopLocal;
+  if (qTag) {
+    ids.qTag = std::make_unique<QTag>(*qTag);
   }
-
-  dr.hopRemote = &ids.hopRemote;
-  dr.hopLocal = &ids.hopLocal;
-
-  return dr;
-}
-
-void setIDStateFromDNSQuestion(IDState& ids, DNSQuestion& dq, DNSName&& qname)
-{
-  ids.origRemote = *dq.remote;
-  ids.origDest = *dq.local;
-  ids.sentTime.set(*dq.queryTime);
-  ids.qname = std::move(qname);
-  ids.qtype = dq.qtype;
-  ids.qclass = dq.qclass;
-  ids.protocol = dq.protocol;
-  ids.delayMsec = dq.delayMsec;
-  ids.tempFailureTTL = dq.tempFailureTTL;
-  ids.origFlags = dq.origFlags;
-  ids.cacheFlags = dq.cacheFlags;
-  ids.cacheKey = dq.cacheKey;
-  ids.cacheKeyNoECS = dq.cacheKeyNoECS;
-  ids.cacheKeyUDP = dq.cacheKeyUDP;
-  ids.subnet = dq.subnet;
-  ids.skipCache = dq.skipCache;
-  ids.packetCache = dq.packetCache;
-  ids.ednsAdded = dq.ednsAdded;
-  ids.ecsAdded = dq.ecsAdded;
-  ids.useZeroScope = dq.useZeroScope;
-  ids.qTag = std::move(dq.qTag);
-  ids.dnssecOK = dq.dnssecOK;
-  ids.uniqueId = std::move(dq.uniqueId);
-
-  if (dq.hopRemote) {
-    ids.hopRemote = *dq.hopRemote;
+  if (d_protoBufData) {
+    ids.d_protoBufData = std::make_unique<InternalQueryState::ProtoBufData>(*d_protoBufData);
   }
-  else {
-    ids.hopRemote.sin4.sin_family = 0;
-  }
-
-  if (dq.hopLocal) {
-    ids.hopLocal = *dq.hopLocal;
-  }
-  else {
-    ids.hopLocal.sin4.sin_family = 0;
-  }
-
-  ids.dnsCryptQuery = std::move(dq.dnsCryptQuery);
+  ids.cs = cs;
+  return ids;
 }

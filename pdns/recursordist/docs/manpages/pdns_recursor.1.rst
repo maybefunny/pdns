@@ -28,7 +28,7 @@ To stop the recursor by hand, run::
     # rec_control quit
 
 However, the recommended way of starting and stopping the recursor is to use
-the init.d script or :manpage:`systemctl(1)`.
+:manpage:`systemctl(1)` or the init.d script.
 
 Options
 -------
@@ -46,6 +46,11 @@ at `<https://doc.powerdns.com/>`
     chroot the process to *directory*.
 --client-tcp-timeout=<num>
     Timeout in seconds when talking to TCP clients.
+--config
+    Show the current configuration. Since 4.8.0 there are three optional values:
+    ``--config=default`` to show the default configuration.
+    ``--config=diff``    show modified options in the current configuration.
+    ``--config=check``   to check the current configuration for errors.
 --config-dir=<directory>
     Location of configuration directory (recursor.conf), the default
     depends on the SYSCONFDIR option at build-time, which is usually

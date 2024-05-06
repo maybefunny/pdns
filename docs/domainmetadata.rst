@@ -5,13 +5,7 @@ Each served zone can have "metadata". Such metadata determines how this
 zone behaves in certain circumstances.
 
 .. warning::
-  Domain metadata is only available for DNSSEC capable
-  backends! Make sure to enable the proper '-dnssec' setting to benefit.
-
-.. warning::
-  When multiple backends are in use, domain metadata is only retrieved from
-  and written to the first DNSSEC-capable backend, no matter where the related
-  zones live.
+  When multiple backends are in use, domain metadata is only retrieved from and written to the first DNSSEC-capable or metadata-capable backend, no matter where the related zones live.
 
 For the BIND backend, this information is either stored in the
 :ref:`setting-bind-dnssec-db` or the hybrid database,
@@ -33,7 +27,7 @@ The following options can only be read (not written to) via the HTTP API metadat
 * PRESIGNED
 * TSIG-ALLOW-AXFR
 
-The option SOA-EDIT-API can not be written or read via the HTTP API metadata endpoint.
+The option SOA-EDIT-API cannot be written or read via the HTTP API metadata endpoint.
 
 .. _metadata-allow-axfr-from:
 
@@ -73,7 +67,7 @@ This metadata item controls whether or not a zone is fully rectified on changes
 to the contents of a zone made through the :doc:`API <http-api/index>`.
 
 When the ``API-RECTIFY`` value is "1", the zone will be rectified on changes.
-Any other other value means that it will not be rectified. If this is not set
+Any other value means that it will not be rectified. If this is not set
 at all, rectifying of the zone depends on the config variable
 :ref:`setting-default-api-rectify`.
 
@@ -96,7 +90,7 @@ ALSO-NOTIFY
 -----------
 
 When notifying this domain, also notify this nameserver (can occur
-multiple times). The nameserver may have contain an optional port
+multiple times). The nameserver may contain an optional port
 number. e.g.:
 
 .. code-block:: shell
@@ -112,8 +106,13 @@ Use this named TSIG key to retrieve this zone from its master, see :ref:`tsig-pr
 
 GSS-ALLOW-AXFR-PRINCIPAL
 ------------------------
-  .. versionchanged:: 4.3.1
-    GSS support was removed
+.. versionchanged:: 4.3.1
+
+   GSS support was removed
+
+.. versionchanged:: 4.7.0
+
+   GSS support was added back
 
 Allow this GSS principal to perform AXFR retrieval. Most commonly it is
 ``host/something@REALM``, ``DNS/something@REALM`` or ``user@REALM``.
@@ -121,8 +120,6 @@ Allow this GSS principal to perform AXFR retrieval. Most commonly it is
 
 GSS-ACCEPTOR-PRINCIPAL
 ----------------------
-  .. versionchanged:: 4.4.0
-    GSS support was removed
 
 Use this principal for accepting GSS context.
 (See :ref:`tsig-gss-tsig`).

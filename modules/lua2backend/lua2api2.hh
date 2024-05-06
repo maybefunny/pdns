@@ -71,7 +71,7 @@ public:
     loadFile(getArg("filename"));
   }
 
-  ~Lua2BackendAPIv2();
+  ~Lua2BackendAPIv2() override;
 
 #define logCall(func, var)                                                                               \
   {                                                                                                      \
@@ -87,12 +87,12 @@ public:
     }                                                                 \
   }
 
-  virtual void postPrepareContext() override
+  void postPrepareContext() override
   {
     AuthLua4::postPrepareContext();
   }
 
-  virtual void postLoad() override
+  void postLoad() override
   {
     f_lookup = d_lw->readVariable<boost::optional<lookup_call_t>>("dns_lookup").get_value_or(0);
     f_list = d_lw->readVariable<boost::optional<list_call_t>>("dns_list").get_value_or(0);
@@ -176,7 +176,7 @@ public:
       g_log << Logger::Debug << "[" << getPrefix() << "] Got empty result" << endl;
   }
 
-  bool list(const DNSName& target, int domain_id, bool include_disabled = false) override
+  bool list(const DNSName& target, int domain_id, bool /* include_disabled */ = false) override
   {
     if (f_list == nullptr) {
       g_log << Logger::Error << "[" << getPrefix() << "] dns_list missing - cannot do AXFR" << endl;
@@ -255,8 +255,8 @@ public:
       else if (item.first == "last_check")
         di.last_check = static_cast<time_t>(boost::get<long>(item.second));
       else if (item.first == "masters")
-        for (const auto& master : boost::get<vector<string>>(item.second))
-          di.masters.push_back(ComboAddress(master, 53));
+        for (const auto& primary : boost::get<vector<string>>(item.second))
+          di.primaries.push_back(ComboAddress(primary, 53));
       else if (item.first == "id")
         di.id = static_cast<int>(boost::get<long>(item.second));
       else if (item.first == "notified_serial")
@@ -272,7 +272,7 @@ public:
     logResult("zone=" << di.zone << ",serial=" << di.serial << ",kind=" << di.getKindString());
   }
 
-  bool getDomainInfo(const DNSName& domain, DomainInfo& di, bool getSerial = true) override
+  bool getDomainInfo(const DNSName& domain, DomainInfo& di, bool /* getSerial */ = true) override
   {
     if (f_get_domaininfo == nullptr) {
       // use getAuth instead
@@ -298,7 +298,7 @@ public:
     return true;
   }
 
-  void getAllDomains(vector<DomainInfo>* domains, bool getSerial, bool include_disabled) override
+  void getAllDomains(vector<DomainInfo>* domains, bool /* getSerial */, bool /* include_disabled */) override
   {
     if (f_get_all_domains == nullptr)
       return;
@@ -426,8 +426,8 @@ public:
 
 private:
   std::list<DNSResourceRecord> d_result;
-  bool d_debug_log;
-  bool d_dnssec;
+  bool d_debug_log{false};
+  bool d_dnssec{false};
 
   lookup_call_t f_lookup;
   list_call_t f_list;

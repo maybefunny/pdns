@@ -84,7 +84,7 @@ const map<const string, uint16_t> QType::names = {
   {"EUI48", 108},
   {"EUI64", 109},
   {"TKEY", 249},
-  //      {"TSIG", 250},
+  {"TSIG", 250},
   {"IXFR", 251},
   {"AXFR", 252},
   {"MAILB", 253},
@@ -119,13 +119,10 @@ bool QType::isSupportedType() const
 
 bool QType::isMetadataType() const
 {
-  if (code == QType::AXFR ||
-      code == QType::MAILA ||
-      code == QType::MAILB ||
-      code == QType::TSIG ||
-      code == QType::IXFR)
+  // rfc6895 section 3.1, note ANY is 255 and falls outside the range
+  if (code == QType::OPT || (code >= rfc6895MetaLowerBound && code <= rfc6895MetaUpperBound)) {
     return true;
-
+  }
   return false;
 }
 
@@ -135,7 +132,7 @@ const string QType::toString() const
   if (name != numbers.cend()) {
     return name->second;
   }
-  return "TYPE" + itoa(code);
+  return "TYPE" + std::to_string(code);
 }
 
 uint16_t QType::chartocode(const char *p)

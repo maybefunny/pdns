@@ -1,4 +1,7 @@
+#ifndef BOOST_TEST_DYN_LINK
 #define BOOST_TEST_DYN_LINK
+#endif
+
 #define BOOST_TEST_NO_MAIN
 
 #ifdef HAVE_CONFIG_H
@@ -127,21 +130,12 @@ BOOST_AUTO_TEST_CASE(test_endianness) {
   uint32_t i = 1;
 #if BYTE_ORDER == BIG_ENDIAN
   BOOST_CHECK_EQUAL(i, htonl(i));
-#elif BYTE_ORDER == LITTLE_ENDIAN 
+#elif BYTE_ORDER == LITTLE_ENDIAN
   uint32_t j=0x01000000;
   BOOST_CHECK_EQUAL(i, ntohl(j));
 #else
   BOOST_FAIL("Did not detect endianness at all");
 #endif
-}
-
-BOOST_AUTO_TEST_CASE(test_parseService) {
-    ServiceTuple tp;
-    parseService("smtp.powerdns.com:25", tp);
-    BOOST_CHECK_EQUAL(tp.host, "smtp.powerdns.com");
-    BOOST_CHECK_EQUAL(tp.port, 25);
-    parseService("smtp.powerdns.com", tp);    
-    BOOST_CHECK_EQUAL(tp.port, 25);
 }
 
 BOOST_AUTO_TEST_CASE(test_ternary) {
@@ -396,6 +390,33 @@ BOOST_AUTO_TEST_CASE(test_makeBytesFromHex) {
   BOOST_CHECK_EQUAL(out, "\x12\x34\x56\x78\x90\xab\xcd\xef");
 
   BOOST_CHECK_THROW(makeBytesFromHex("123"), std::range_error);
+
+  BOOST_CHECK_THROW(makeBytesFromHex("1234GG"), std::range_error);
+}
+
+BOOST_AUTO_TEST_CASE(test_makeHexDump) {
+  auto out = makeHexDump("\x12\x34\x56\x78\x90\xab\xcd\xef");
+  // there is a trailing white space by design
+  BOOST_CHECK_EQUAL(out, "12 34 56 78 90 ab cd ef ");
+}
+
+BOOST_AUTO_TEST_CASE(test_CleanSlashes) {
+  auto cleanSlashesWrapper = [](const char* str) {
+    std::string fullStr(str);
+    cleanSlashes(fullStr);
+    return fullStr;
+  };
+  BOOST_CHECK_EQUAL(cleanSlashesWrapper(""), "");
+  BOOST_CHECK_EQUAL(cleanSlashesWrapper("/"), "/");
+  BOOST_CHECK_EQUAL(cleanSlashesWrapper("//"), "/");
+  BOOST_CHECK_EQUAL(cleanSlashesWrapper("/test"), "/test");
+  BOOST_CHECK_EQUAL(cleanSlashesWrapper("//test"), "/test");
+  BOOST_CHECK_EQUAL(cleanSlashesWrapper("///test"), "/test");
+  BOOST_CHECK_EQUAL(cleanSlashesWrapper("/test/"), "/test/");
+  BOOST_CHECK_EQUAL(cleanSlashesWrapper("//test/"), "/test/");
+  BOOST_CHECK_EQUAL(cleanSlashesWrapper("//test//"), "/test/");
+  BOOST_CHECK_EQUAL(cleanSlashesWrapper("///test//"), "/test/");
+  BOOST_CHECK_EQUAL(cleanSlashesWrapper("test///"), "test/");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

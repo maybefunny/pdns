@@ -16,6 +16,7 @@
 #endif /* HAVE_NET_SNMP */
 
 #include "mplexer.hh"
+#include "channel.hh"
 
 class SNMPAgent
 {
@@ -23,11 +24,6 @@ public:
   SNMPAgent(const std::string& name, const std::string& daemonSocket);
   virtual ~SNMPAgent()
   {
-#ifdef HAVE_NET_SNMP
-    
-    close(d_trapPipe[0]);
-    close(d_trapPipe[1]);
-#endif /* HAVE_NET_SNMP */
   }
 
   void run()
@@ -45,13 +41,13 @@ public:
 protected:
 #ifdef HAVE_NET_SNMP
   /* OID for snmpTrapOID.0 */
-  static const oid snmpTrapOID[];
-  static const size_t snmpTrapOIDLen;
+  static const std::array<oid, 11> snmpTrapOID;
 
-  static bool sendTrap(int fd,
+  static bool sendTrap(pdns::channel::Sender<netsnmp_variable_list, void(*)(netsnmp_variable_list*)>& sender,
                        netsnmp_variable_list* varList);
 
-  int d_trapPipe[2] = { -1, -1};
+  pdns::channel::Sender<netsnmp_variable_list, void(*)(netsnmp_variable_list*)> d_sender;
+  pdns::channel::Receiver<netsnmp_variable_list, void(*)(netsnmp_variable_list*)> d_receiver;
 #endif /* HAVE_NET_SNMP */
 private:
   void worker();

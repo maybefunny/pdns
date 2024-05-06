@@ -21,8 +21,8 @@ tiny (or larger) `Lua <https://www.lua.org>`_ statements.
   interoperability, and strive to turn this functionality into a broadly
   supported standard.
 
-To enable this feature, either set 'enable-lua-records' in the configuration,
-or set the 'ENABLE-LUA-RECORDS' per-zone metadata item to 1.
+To enable this feature, either set `:ref:`setting-enable-lua-records` in the configuration,
+or set the ``ENABLE-LUA-RECORDS`` per-zone metadata item to ``1``.
 
 In addition, to benefit from the geographical features, make sure the PowerDNS
 launch statement includes the ``geoip`` backend.
@@ -38,7 +38,7 @@ Examples
 Before delving into the details, some examples may be of use to explain what
 dynamic records can do.
 
-Here is a very basic example::
+Here is a very basic example using :func:`ifportup`::
 
      www    IN    LUA    A    "ifportup(443, {'192.0.2.1', '192.0.2.2'})"
 
@@ -49,11 +49,19 @@ addresses listen on port 443.
 If either IP address stops listening, only the other address will be
 returned. If all IP addresses are down, all candidates are returned.
 
+You can also provide multiple sets of IP addresses to prioritize a set over the
+rest. If an IP address from the first set is available, it will be returned. If
+no addresses work in the first set, the second set is tried.
+
+For example::
+
+     www    IN    LUA    A    "ifportup(443, {{'192.0.2.1', '192.0.2.2'}, {'192.0.3.1'}})"
+
 Because DNS queries require rapid answers, server availability is not checked
 synchronously. In the background, a process periodically determines if IP
 addresses mentioned in availability rules are, in fact, available.
 
-Another example::
+Another example using :func:`pickclosest`::
 
     www    IN    LUA    A    "pickclosest({'192.0.2.1','192.0.2.2','198.51.100.1'})"
 
@@ -61,7 +69,7 @@ This uses the GeoIP backend to find indications of the geographical location of
 the requester and the listed IP addresses. It will return with one of the closest
 addresses.
 
-``pickclosest`` and ifportup can be combined as follows::
+:func:`pickclosest` and :func:`ifportup` can be combined as follows::
 
   www    IN    LUA    A    ("ifportup(443, {'192.0.2.1', '192.0.2.2', '198.51.100.1'}"
                             ", {selector='pickclosest'})                             ")
@@ -70,9 +78,17 @@ This will pick from the viable IP addresses the one deemed closest to the user.
 
 LUA records can also contain more complex code, for example::
 
-    www    IN    LUA    A    ";if countryCode('US') then return {'192.0.2.1','192.0.2.2','198.51.100.1'} else return '192.0.2.2' end"
+    www    IN    LUA    A    ";if country('US') then return {'192.0.2.1','192.0.2.2','198.51.100.1'} else return '192.0.2.2' end"
 
-As you can see you can return both single string value or array of strings. 
+As you can see you can return both single string value or array of strings.
+
+An example Lua record accessing ``qname``::
+
+    *.example.net   10      IN      LUA     TXT "; return 'Got a TXT query for ' .. qname:toString() .. '; First label is: ' .. qname:getRawLabels()[1]"
+
+``qtype`` cannot be accessed from a Lua script, the value is fixed per Lua record.
+See :doc:`functions` for available variables.
+
 
 Using LUA Records with Generic SQL backends
 -------------------------------------------
@@ -134,8 +150,8 @@ A more powerful example::
                                 "{stringmatch='Programming in Lua'})              " )
 
 In this case, IP addresses are tested to see if they will serve
-https for 'www.lua.org', and if that page contains the string 'Programming
-in Lua'.
+https for 'www.lua.org', and if that page contains the string
+``Programming in Lua``.
 
 Two sets of IP addresses are supplied.  If an IP address from the first set
 is available, it will be returned. If no addresses work in the first set,
@@ -161,9 +177,9 @@ outside of Europe will hit 198.51.100.1 as long as it is available, and the
 
 Advanced topics
 ---------------
-By default, LUA records are executed with 'return ' prefixed to them. This saves
-a lot of typing for common cases. To run actual Lua scripts, start a record with a ';'
-which indicates no 'return ' should be prepended.
+By default, LUA records are executed with ``return `` prefixed to them. This saves
+a lot of typing for common cases. To run actual Lua scripts, start a record with a ``;``
+which indicates no ``return `` should be prepended.
 
 To keep records more concise and readable, configuration can be stored in
 separate records. The full example from above can also be written as::
@@ -190,7 +206,7 @@ Details & Security
 LUA records are synthesized on query. They can also be transferred via AXFR
 to other PowerDNS servers.
 
-LUA records themselves can not be queried however, as this would allow third parties to see load balancing internals
+LUA records themselves cannot be queried however, as this would allow third parties to see load balancing internals
 they do not need to see.
 
 A non-supporting DNS server will also serve a zone with LUA records, but

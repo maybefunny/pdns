@@ -1,5 +1,8 @@
 
+#ifndef BOOST_TEST_DYN_LINK
 #define BOOST_TEST_DYN_LINK
+#endif
+
 #define BOOST_TEST_NO_MAIN
 
 #include <thread>
@@ -208,7 +211,7 @@ BOOST_AUTO_TEST_CASE(test_Rings_Threaded) {
   Rings rings(numberOfEntries, numberOfShards, lockAttempts, true);
   rings.init();
 #if defined(DNSDIST_RINGS_WITH_MACADDRESS)
-  Rings::Query query({requestor, qname, now, dh, size, qtype, protocol, "", false});
+  Rings::Query query({requestor, qname, now, dh, size, qtype, protocol, dnsdist::MacAddress(), false});
 #else
   Rings::Query query({requestor, qname, now, dh, size, qtype, protocol});
 #endif

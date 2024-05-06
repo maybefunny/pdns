@@ -70,6 +70,7 @@ f 3600 IN CNAME f            ; CNAME loop: dirty trick to get a ServFail in an a
         self.assertTrue(foundMisses)
 
     def testNotify(self):
+        self.waitForTCPSocket("127.0.0.1", self._wsPort)
         # first query
         qname = 'a.example.'
         query = dns.message.make_query(qname, 'A', want_dnssec=True)
@@ -102,9 +103,9 @@ f 3600 IN CNAME f            ; CNAME loop: dirty trick to get a ServFail in an a
             sender = getattr(self, method)
             res = sender(notify)
             self.assertRcodeEqual(res, dns.rcode.NOERROR)
-            self.assertEquals(res.opcode(), 4)
+            self.assertEqual(res.opcode(), 4)
             print(res)
-            self.assertEquals(res.question[0].to_text(), 'example. IN SOA')
+            self.assertEqual(res.question[0].to_text(), 'example. IN SOA')
 
         self.checkRecordCacheMetrics(3, 1)
 

@@ -5,7 +5,7 @@
 #   dig a www.example.com @0 -p 1053
 
 # Builder
-FROM debian:10-slim AS builder
+FROM debian:11-slim AS builder
 
 ENV NO_LUA_JIT="s390x arm64"
 
@@ -13,7 +13,7 @@ ENV NO_LUA_JIT="s390x arm64"
 RUN apt-get update && apt-get -y dist-upgrade && apt-get clean
 
 # devscripts gives us mk-build-deps (and a lot of other stuff)
-RUN apt-get install -y --no-install-recommends devscripts equivs git curl && apt-get clean
+RUN apt-get install -y --no-install-recommends devscripts equivs git curl jq && apt-get clean
 
 COPY builder-support /source/builder-support
 
@@ -27,6 +27,10 @@ COPY m4 /source/m4
 COPY ext /source/ext
 COPY .git /source/.git
 COPY builder/helpers/set-configure-ac-version.sh /usr/local/bin
+
+COPY builder-support/helpers/install_rust.sh /source/install_rust.sh
+COPY builder-support/helpers/rust.json /source/rust.json
+RUN cd /source/ && ./install_rust.sh
 
 # build and install (TODO: before we hit this line, rearrange /source structure if we are coming from a tarball)
 WORKDIR /source/pdns/recursordist
@@ -66,7 +70,7 @@ RUN cd /tmp && mkdir /build/tmp/ && mkdir debian && \
     dpkg-deb -I equivs-dummy_1.0_all.deb && cp equivs-dummy_1.0_all.deb /build/tmp/
 
 # Runtime
-FROM debian:10-slim
+FROM debian:11-slim
 
 # Reusable layer for base update - Should be cached from builder
 RUN apt-get update && apt-get -y dist-upgrade && apt-get clean

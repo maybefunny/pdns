@@ -22,6 +22,7 @@
 #pragma once
 #include <mutex>
 #include <shared_mutex>
+#include <stdexcept>
 
 /*
   This file provides several features around locks:
@@ -80,9 +81,7 @@
 class ReadWriteLock
 {
 public:
-  ReadWriteLock()
-  {
-  }
+  ReadWriteLock() = default;
 
   ReadWriteLock(const ReadWriteLock& rhs) = delete;
   ReadWriteLock(ReadWriteLock&& rhs) = delete;
@@ -110,7 +109,8 @@ public:
 
   ReadLock(const ReadLock& rhs) = delete;
   ReadLock& operator=(const ReadLock& rhs) = delete;
-  ReadLock(ReadLock&& rhs) : d_lock(std::move(rhs.d_lock))
+  ReadLock(ReadLock&& rhs) noexcept :
+    d_lock(std::move(rhs.d_lock))
   {
   }
 
@@ -135,7 +135,8 @@ public:
 
   WriteLock(const WriteLock& rhs) = delete;
   WriteLock& operator=(const WriteLock& rhs) = delete;
-  WriteLock(WriteLock&& rhs) : d_lock(std::move(rhs.d_lock))
+  WriteLock(WriteLock&& rhs) noexcept :
+    d_lock(std::move(rhs.d_lock))
   {
   }
 
@@ -274,9 +275,7 @@ public:
   {
   }
 
-  explicit LockGuarded()
-  {
-  }
+  explicit LockGuarded() = default;
 
   LockGuardedTryHolder<T> try_lock()
   {
@@ -288,7 +287,7 @@ public:
     return LockGuardedHolder<T>(d_value, d_mutex);
   }
 
-  LockGuardedHolder<const T> read_only_lock() const
+  LockGuardedHolder<const T> read_only_lock()
   {
     return LockGuardedHolder<const T>(d_value, d_mutex);
   }
@@ -422,9 +421,7 @@ public:
   {
   }
 
-  explicit SharedLockGuarded()
-  {
-  }
+  explicit SharedLockGuarded() = default;
 
   SharedLockGuardedTryHolder<T> try_write_lock()
   {

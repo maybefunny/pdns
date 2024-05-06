@@ -6,13 +6,15 @@ import ssl
 import subprocess
 import time
 import unittest
-from dnsdisttests import DNSDistTest
+from dnsdisttests import DNSDistTest, pickAvailablePort
 
 class TLSTests(object):
 
     def getServerCertificate(self):
         conn = self.openTLSConnection(self._tlsServerPort, self._serverName, self._caCert)
-        return conn.getpeercert()
+        cert = conn.getpeercert()
+        conn.close()
+        return cert
 
     def getTLSProvider(self):
         return self.sendConsoleCommand("getBind(0):getEffectiveTLSProvider()").rstrip()
@@ -56,9 +58,10 @@ class TLSTests(object):
         self.assertEqual(names, ['tls.tests.dnsdist.org', 'powerdns.com', '127.0.0.1'])
         serialNumber = cert['serialNumber']
 
-        self.generateNewCertificateAndKey()
+        self.generateNewCertificateAndKey('server-tls')
         self.sendConsoleCommand("reloadAllCertificates()")
 
+        conn.close()
         # open a new connection
         conn = self.openTLSConnection(self._tlsServerPort, self._serverName, self._caCert)
 
@@ -86,6 +89,7 @@ class TLSTests(object):
 
         # and that the serial is different
         self.assertNotEqual(serialNumber, cert['serialNumber'])
+        conn.close()
 
     def testTLKA(self):
         """
@@ -111,6 +115,8 @@ class TLSTests(object):
             receivedQuery.id = query.id
             self.assertEqual(query, receivedQuery)
             self.assertEqual(response, receivedResponse)
+
+        conn.close()
 
     def testTLSPipelining(self):
         """
@@ -138,6 +144,8 @@ class TLSTests(object):
             receivedQuery.id = query.id
             self.assertEqual(query, receivedQuery)
             self.assertEqual(response, receivedResponse)
+
+        conn.close()
 
     def testTLSSNIRouting(self):
         """
@@ -169,6 +177,7 @@ class TLSTests(object):
         self.assertTrue(receivedResponse)
         self.assertEqual(expectedResponse, receivedResponse)
 
+        conn.close()
         # this one should not
         conn = self.openTLSConnection(self._tlsServerPort, self._serverName, self._caCert)
 
@@ -179,6 +188,7 @@ class TLSTests(object):
         receivedQuery.id = query.id
         self.assertEqual(query, receivedQuery)
         self.assertEqual(response, receivedResponse)
+        conn.close()
 
     def testTLSSNIRoutingAfterResumption(self):
         # we have more complicated tests about session resumption itself,
@@ -255,13 +265,14 @@ class TLSTests(object):
 
 class TestOpenSSL(DNSDistTest, TLSTests):
 
+    _extraStartupSleep = 1
     _consoleKey = DNSDistTest.generateConsoleKey()
     _consoleKeyB64 = base64.b64encode(_consoleKey).decode('ascii')
-    _serverKey = 'server.key'
-    _serverCert = 'server.chain'
+    _serverKey = 'server-tls.key'
+    _serverCert = 'server-tls.chain'
     _serverName = 'tls.tests.dnsdist.org'
     _caCert = 'ca.pem'
-    _tlsServerPort = 8453
+    _tlsServerPort = pickAvailablePort()
     _config_template = """
     setKey("%s")
     controlSocket("127.0.0.1:%s")
@@ -272,18 +283,25 @@ class TestOpenSSL(DNSDistTest, TLSTests):
     """
     _config_params = ['_consoleKeyB64', '_consolePort', '_testServerPort', '_tlsServerPort', '_serverCert', '_serverKey']
 
+    @classmethod
+    def setUpClass(cls):
+        cls.generateNewCertificateAndKey('server-tls')
+        cls.startResponders()
+        cls.startDNSDist()
+        cls.setUpSockets()
+
     def testProvider(self):
-        self.assertEquals(self.getTLSProvider(), "openssl")
+        self.assertEqual(self.getTLSProvider(), "openssl")
 
 class TestGnuTLS(DNSDistTest, TLSTests):
 
     _consoleKey = DNSDistTest.generateConsoleKey()
     _consoleKeyB64 = base64.b64encode(_consoleKey).decode('ascii')
-    _serverKey = 'server.key'
-    _serverCert = 'server.chain'
+    _serverKey = 'server-tls.key'
+    _serverCert = 'server-tls.chain'
     _serverName = 'tls.tests.dnsdist.org'
     _caCert = 'ca.pem'
-    _tlsServerPort = 8453
+    _tlsServerPort = pickAvailablePort()
     _config_template = """
     setKey("%s")
     controlSocket("127.0.0.1:%s")
@@ -294,15 +312,22 @@ class TestGnuTLS(DNSDistTest, TLSTests):
     """
     _config_params = ['_consoleKeyB64', '_consolePort', '_testServerPort', '_tlsServerPort', '_serverCert', '_serverKey']
 
+    @classmethod
+    def setUpClass(cls):
+        cls.generateNewCertificateAndKey('server-tls')
+        cls.startResponders()
+        cls.startDNSDist()
+        cls.setUpSockets()
+
     def testProvider(self):
-        self.assertEquals(self.getTLSProvider(), "gnutls")
+        self.assertEqual(self.getTLSProvider(), "gnutls")
 
 class TestDOTWithCache(DNSDistTest):
     _serverKey = 'server.key'
     _serverCert = 'server.chain'
     _serverName = 'tls.tests.dnsdist.org'
     _caCert = 'ca.pem'
-    _tlsServerPort = 8453
+    _tlsServerPort = pickAvailablePort()
     _config_template = """
     newServer{address="127.0.0.1:%s"}
 
@@ -352,25 +377,27 @@ class TestDOTWithCache(DNSDistTest):
         self.assertEqual(expectedQuery, receivedQuery)
         self.checkQueryNoEDNS(expectedQuery, receivedQuery)
         self.assertEqual(response, receivedResponse)
+        conn.close()
 
         for _ in range(numberOfQueries):
             conn = self.openTLSConnection(self._tlsServerPort, self._serverName, self._caCert)
             self.sendTCPQueryOverConnection(conn, query, response=None)
             receivedResponse = self.recvTCPResponseOverConnection(conn, useQueue=False)
             self.assertEqual(receivedResponse, response)
+            conn.close()
 
 class TestTLSFrontendLimits(DNSDistTest):
 
     # this test suite uses a different responder port
     # because it uses a different health check configuration
-    _testServerPort = 5395
+    _testServerPort = pickAvailablePort()
     _answerUnexpected = True
 
     _serverKey = 'server.key'
     _serverCert = 'server.chain'
     _serverName = 'tls.tests.dnsdist.org'
     _caCert = 'ca.pem'
-    _tlsServerPort = 8453
+    _tlsServerPort = pickAvailablePort()
 
     _skipListeningOnCL = True
     _tcpIdleTimeout = 2
@@ -380,6 +407,8 @@ class TestTLSFrontendLimits(DNSDistTest):
     addTLSLocal("127.0.0.1:%s", "%s", "%s", { provider="openssl", maxConcurrentTCPConnections=%d })
     """
     _config_params = ['_testServerPort', '_tlsServerPort', '_serverCert', '_serverKey', '_maxTCPConnsPerTLSFrontend']
+    _alternateListeningAddr = '127.0.0.1'
+    _alternateListeningPort = _tlsServerPort
 
     def testTCPConnsPerTLSFrontend(self):
         """
@@ -429,7 +458,7 @@ class TestProtocols(DNSDistTest):
     _serverCert = 'server.chain'
     _serverName = 'tls.tests.dnsdist.org'
     _caCert = 'ca.pem'
-    _tlsServerPort = 8453
+    _tlsServerPort = pickAvailablePort()
 
     _config_template = """
     function checkDOT(dq)
@@ -461,15 +490,16 @@ class TestProtocols(DNSDistTest):
         receivedQuery.id = query.id
         self.assertEqual(query, receivedQuery)
         self.assertEqual(response, receivedResponse)
+        conn.close()
 
 class TestPKCSTLSCertificate(DNSDistTest, TLSTests):
     _consoleKey = DNSDistTest.generateConsoleKey()
     _consoleKeyB64 = base64.b64encode(_consoleKey).decode('ascii')
-    _serverCert = 'server.p12'
+    _serverCert = 'server-tls.p12'
     _pkcsPassphrase = 'passw0rd'
     _serverName = 'tls.tests.dnsdist.org'
     _caCert = 'ca.pem'
-    _tlsServerPort = 8453
+    _tlsServerPort = pickAvailablePort()
     _config_template = """
     setKey("%s")
     controlSocket("127.0.0.1:%s")
@@ -479,3 +509,10 @@ class TestPKCSTLSCertificate(DNSDistTest, TLSTests):
     addAction(SNIRule("powerdns.com"), SpoofAction("1.2.3.4"))
     """
     _config_params = ['_consoleKeyB64', '_consolePort', '_testServerPort', '_serverCert', '_pkcsPassphrase', '_tlsServerPort']
+
+    @classmethod
+    def setUpClass(cls):
+        cls.generateNewCertificateAndKey('server-tls')
+        cls.startResponders()
+        cls.startDNSDist()
+        cls.setUpSockets()

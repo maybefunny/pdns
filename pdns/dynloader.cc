@@ -54,7 +54,7 @@ StatBag S;
 
 int main(int argc, char **argv)
 {
-  string s_programname="pdns";
+  string programname="pdns";
 
   ::arg().set("config-dir","Location of configuration directory (pdns.conf)")=SYSCONFDIR;
   ::arg().set("socket-dir",string("Where the controlsocket will live, ")+LOCALSTATEDIR+"/pdns when unset and not chrooted" )="";
@@ -83,9 +83,9 @@ int main(int argc, char **argv)
   }
 
   if(::arg()["config-name"]!="")
-    s_programname+="-"+::arg()["config-name"];
+    programname+="-"+::arg()["config-name"];
 
-  string configname=::arg()["config-dir"]+"/"+s_programname+".conf";
+  string configname=::arg()["config-dir"]+"/"+programname+".conf";
   cleanSlashes(configname);
 
   if(!::arg().mustDo("no-config")) {
@@ -103,14 +103,14 @@ int main(int argc, char **argv)
     socketname = ::arg()["chroot"] + ::arg()["socket-dir"];
   }
 
-  socketname += "/" + s_programname + ".controlsocket";
+  socketname += "/" + programname + ".controlsocket";
   cleanSlashes(socketname);
 
   try {
     string command = commands[0];
     shared_ptr<DynMessenger> D;
     if(::arg()["remote-address"].empty())
-      D=shared_ptr<DynMessenger>(new DynMessenger(socketname));
+      D = std::make_shared<DynMessenger>(socketname);
     else {
       uint16_t port;
       try {
@@ -121,7 +121,7 @@ int main(int argc, char **argv)
         exit(99);
       }
 
-      D=shared_ptr<DynMessenger>(new DynMessenger(ComboAddress(::arg()["remote-address"], port), ::arg()["secret"]));
+      D = std::make_shared<DynMessenger>(ComboAddress(::arg()["remote-address"], port), ::arg()["secret"]);
     }
 
     string message;

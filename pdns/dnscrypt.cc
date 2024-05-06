@@ -215,7 +215,9 @@ void DNSCryptContext::generateCertificate(uint32_t serial, time_t begin, time_t 
   memcpy(cert.signedData.resolverPK, pubK, sizeof(cert.signedData.resolverPK));
   memcpy(cert.signedData.clientMagic, pubK, sizeof(cert.signedData.clientMagic));
   cert.signedData.serial = htonl(serial);
+  // coverity[store_truncates_time_t]
   cert.signedData.tsStart = htonl((uint32_t) begin);
+  // coverity[store_truncates_time_t]
   cert.signedData.tsEnd = htonl((uint32_t) end);
 
   unsigned long long signatureSize = 0;
@@ -287,7 +289,7 @@ void DNSCryptContext::addNewCertificate(std::shared_ptr<DNSCryptCertificatePair>
 {
   auto certs = d_certs.write_lock();
 
-  for (auto pair : *certs) {
+  for (const auto& pair : *certs) {
     if (pair->cert.getSerial() == newCert->cert.getSerial()) {
       if (reload) {
         /* on reload we just assume that this is the same certificate */
@@ -354,7 +356,7 @@ std::vector<std::shared_ptr<DNSCryptCertificatePair>> DNSCryptContext::getCertif
 
 void DNSCryptContext::markActive(uint32_t serial)
 {
-  for (auto pair : *d_certs.write_lock()) {
+  for (const auto& pair : *d_certs.write_lock()) {
     if (pair->active == false && pair->cert.getSerial() == serial) {
       pair->active = true;
       return;
@@ -365,7 +367,7 @@ void DNSCryptContext::markActive(uint32_t serial)
 
 void DNSCryptContext::markInactive(uint32_t serial)
 {
-  for (auto pair : *d_certs.write_lock()) {
+  for (const auto& pair : *d_certs.write_lock()) {
     if (pair->active == true && pair->cert.getSerial() == serial) {
       pair->active = false;
       return;
@@ -397,9 +399,10 @@ bool DNSCryptQuery::parsePlaintextQuery(const PacketBuffer& packet)
     return false;
   }
 
-  const struct dnsheader * dh = reinterpret_cast<const struct dnsheader *>(packet.data());
-  if (dh->qr || ntohs(dh->qdcount) != 1 || dh->ancount != 0 || dh->nscount != 0 || dh->opcode != Opcode::Query)
+  const dnsheader_aligned dh(packet.data());
+  if (dh->qr || ntohs(dh->qdcount) != 1 || dh->ancount != 0 || dh->nscount != 0 || static_cast<uint8_t>(dh->opcode) != Opcode::Query) {
     return false;
+  }
 
   unsigned int qnameWireLength;
   uint16_t qtype, qclass;
@@ -416,7 +419,7 @@ bool DNSCryptQuery::parsePlaintextQuery(const PacketBuffer& packet)
     return false;
   }
 
-  d_qname = qname;
+  d_qname = std::move(qname);
   d_id = dh->id;
   d_valid = true;
 

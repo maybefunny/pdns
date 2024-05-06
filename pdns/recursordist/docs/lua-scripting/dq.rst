@@ -21,13 +21,13 @@ The DNSQuestion object contains at least the following fields:
 
       .. versionadded:: 4.5.0
 
-      The current extended error code, if any. See :ref:`setting-extended-resolution-errors`.
+      The extended error code, if any. See :ref:`setting-extended-resolution-errors`.
 
   .. attribute:: DNSQuestion.extendedErrorExtra
 
       .. versionadded:: 4.5.0
 
-      The current extended error extra text, as a string, if any. See :ref:`setting-extended-resolution-errors`.
+      The extended error extra text, as a string, if any. See :ref:`setting-extended-resolution-errors`.
 
   .. attribute:: DNSQuestion.qname
 
@@ -50,10 +50,20 @@ The DNSQuestion object contains at least the following fields:
   .. attribute:: DNSQuestion.remoteaddr
 
       :class:`ComboAddress` of the requestor.
+      If the proxy protocol is used, this will contain the source address from the proxy protocol header.
 
   .. attribute:: DNSQuestion.localaddr
 
       :class:`ComboAddress` where this query was received on.
+      If the proxy protocol is used, this will contain the destination address from the proxy protocol header.
+
+  .. attribute:: DNSQuestion.interface_remoteaddr
+
+      Source :class:`ComboAddress` of the packet received by the recursor. If the proxy protocol is not used, the value will match ``remoteaddr``.
+
+  .. attribute:: DNSQuestion.interface_localaddr
+
+      Destination :class:`ComboAddress` of the packet received by the recursor. If the proxy protocol is not used, the value will match ``localaddr``.
 
   .. attribute:: DNSQuestion.variable
 
@@ -157,7 +167,7 @@ The DNSQuestion object contains at least the following fields:
 
   .. attribute:: DNSQuestion.udpAnswer
 
-      Answer to the :attr:`udpQuery <DNSQuestion.udpQuery>` when when using the ``udpQueryResponse`` :attr:`followupFunction <DNSQuestion.followupFunction>`.
+      Answer to the :attr:`udpQuery <DNSQuestion.udpQuery>` when using the ``udpQueryResponse`` :attr:`followupFunction <DNSQuestion.followupFunction>`.
       Only filled when the call-back function is invoked.
 
   .. attribute:: DNSQuestion.udpQueryDest
@@ -222,6 +232,20 @@ The DNSQuestion object contains at least the following fields:
   .. attribute:: DNSQuestion.tag
 
       The packet-cache tag set via :func:`gettag`, or 0 if it has not been set.
+
+  .. attribute:: DNSQuestion.queryTime
+
+     .. versionadded:: 4.8.0
+
+     The time the query was received
+
+     .. attribute:: DNSQuestion.queryTime.tv_sec
+
+        The number of seconds since the Unix epoch.
+
+     .. attribute:: DNSQuestion.queryTime.tv_usec
+
+        The number of microseconds, to be added to the number of seconds in :attr:`DNSQuestion.queryTime.tv_sec` to get a high accuracy timestamp.
 
   It also supports the following methods:
 

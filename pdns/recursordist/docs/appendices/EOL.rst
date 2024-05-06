@@ -3,29 +3,29 @@
 End of life statements
 ======================
 
-We aim to have a release every six months.
-The latest release receives correctness, stability and security updates.
-The two releases before that get critical updates only.
+We aim to have a major release every six months.
+The latest major release train receives correctness, stability and security updates by the way of minor releases.
+We support older releases with critical updates for one year after the following major release.
 
 Older releases are marked end of life and receive no updates at all.
 Pre-releases do not receive immediate security updates.
 
-The currently supported release train of the PowerDNS Recursor is 4.7.
+The currently supported release train of the PowerDNS Recursor is 5.0.
 
-PowerDNS Recursor 4.6 will only receive critical updates and will be
-end of life after PowerDNS Recursor 4.9 is released.
+PowerDNS Recursor 4.9 will only receive critical updates and will be End of Life one year after PowerDNS Recursor 5.0 was released.
 
-PowerDNS Recursor 4.5 will only receive critical updates and will be
-end of life after PowerDNS Recursor 4.8 is released.
+PowerDNS Recursor 4.8 will only receive critical updates and will be End of Life one year after PowerDNS Recursor 4.9 was released.
 
-PowerDNS Recursor 4.0 through 4.4, 3.x, and 2.x are End of Life.
+PowerDNS Recursor 4.0 through 4.7, 3.x, and 2.x are End of Life.
 
 Note: Users with a commercial agreement with PowerDNS.COM BV or Open-Xchange
 can receive extended support for releases which are End Of Life. If you are
 such a user, these EOL statements do not apply to you.
-Please refer to the commercial support `commitment
+Please refer to the support `commitment
 <https://oxpedia.org/wiki/index.php?title=PowerDNS:Version_Support_Commitment>`_
 for details.
+Note that for the Open Source support channels we only support the latest minor release of a release train.
+That means that we ask you to reproduce potential issues on the latest minor release first.
 
 .. list-table:: PowerDNS Recursor Release Life Cycle
    :header-rows: 1
@@ -34,18 +34,30 @@ for details.
      - Release date
      - Critical-Only updates
      - End of Life
+   * - 5.0
+     - January 10 2024
+     - ~ July 2024
+     - ~ July 2025
+   * - 4.9
+     - June 30 2023
+     - January 10 2024
+     - January 10 2025
+   * - 4.8
+     - December 12 2022
+     - June 30 2023
+     - June 30 2024
    * - 4.7
      - May 30 2022
-     - ~ December 2022
-     - EOL ~ December 2023
+     - December 12 2022
+     - EOL January 10 2024
    * - 4.6
      - December 17 2021
      - May 30 2022
-     - EOL ~ May 2023
+     - EOL June 30 2023
    * - 4.5
      - May 11 2021
      - December 17 2021
-     - EOL ~ December 2022
+     - EOL December 12 2022
    * - 4.4
      - October 19 2020
      - May 11 2021

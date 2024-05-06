@@ -21,7 +21,10 @@
     Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
+#ifndef BOOST_TEST_DYN_LINK
 #define BOOST_TEST_DYN_LINK
+#endif
+
 #define BOOST_TEST_NO_MAIN
 
 #ifdef HAVE_CONFIG_H
@@ -85,7 +88,7 @@ static void checkTSIG(const DNSName& tsigName, const DNSName& tsigAlgo, const st
       BOOST_CHECK_EQUAL(answer.first.d_ttl, 0U);
       BOOST_CHECK_EQUAL(tsigFound, false);
 
-      shared_ptr<TSIGRecordContent> rectrc = getRR<TSIGRecordContent>(answer.first);
+      auto rectrc = getRR<TSIGRecordContent>(answer.first);
       if (rectrc) {
         trc = *rectrc;
         theirMac = rectrc->d_mac;

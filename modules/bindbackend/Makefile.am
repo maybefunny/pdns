@@ -1,5 +1,5 @@
 pkglib_LTLIBRARIES = libbindbackend.la
-AM_CPPFLAGS += -I../../pdns
+AM_CPPFLAGS += -I../../pdns $(LIBCRYPTO_INCLUDES)
 
 AM_LFLAGS = -i
 AM_YFLAGS = -d --verbose --debug
@@ -19,7 +19,3 @@ libbindbackend_la_SOURCES = \
 	binddnssec.cc
 
 libbindbackend_la_LDFLAGS = -module -avoid-version
-
-# for bindparser.h/hh
-.hh.h:
-	cp $< $@

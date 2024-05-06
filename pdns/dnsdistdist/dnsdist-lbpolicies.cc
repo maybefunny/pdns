@@ -25,6 +25,7 @@
 #include "dnsdist-lua.hh"
 #include "dnsdist-lua-ffi.hh"
 #include "dolog.hh"
+#include "dns_random.hh"
 
 GlobalStateHolder<ServerPolicy> g_policy;
 bool g_roundrobinFailOnNoServer{false};
@@ -40,7 +41,7 @@ template <class T> static std::shared_ptr<DownstreamState> getLeastOutstanding(c
   size_t usableServers = 0;
   for (const auto& d : servers) {
     if (d.second->isUp()) {
-      poss[usableServers] = std::make_pair(std::make_tuple(d.second->outstanding.load(), d.second->d_config.order, d.second->latencyUsec), d.first);
+      poss.at(usableServers) = std::pair(std::tuple(d.second->outstanding.load(), d.second->d_config.order, d.second->getRelevantLatencyUsec()), d.first);
       usableServers++;
     }
   }
@@ -100,7 +101,7 @@ template <class T> static std::shared_ptr<DownstreamState> getValRandom(const Se
         sum += d.second->d_config.d_weight;
       }
 
-      poss[usableServers]  = std::make_pair(sum, d.first);
+      poss.at(usableServers) = std::pair(sum, d.first);
       usableServers++;
     }
   }
@@ -153,7 +154,7 @@ static shared_ptr<DownstreamState> valrandom(const unsigned int val, const Serve
 
 shared_ptr<DownstreamState> wrandom(const ServerPolicy::NumberedServerVector& servers, const DNSQuestion* dq)
 {
-  return valrandom(random(), servers);
+  return valrandom(dns_random_uint32(), servers);
 }
 
 uint32_t g_hashperturb;
@@ -166,7 +167,7 @@ shared_ptr<DownstreamState> whashedFromHash(const ServerPolicy::NumberedServerVe
 
 shared_ptr<DownstreamState> whashed(const ServerPolicy::NumberedServerVector& servers, const DNSQuestion* dq)
 {
-  return whashedFromHash(servers, dq->qname->hash(g_hashperturb));
+  return whashedFromHash(servers, dq->ids.qname.hash(g_hashperturb));
 }
 
 shared_ptr<DownstreamState> chashedFromHash(const ServerPolicy::NumberedServerVector& servers, size_t qhash)
@@ -228,7 +229,7 @@ shared_ptr<DownstreamState> chashedFromHash(const ServerPolicy::NumberedServerVe
 
 shared_ptr<DownstreamState> chashed(const ServerPolicy::NumberedServerVector& servers, const DNSQuestion* dq)
 {
-  return chashedFromHash(servers, dq->qname->hash(g_hashperturb));
+  return chashedFromHash(servers, dq->ids.qname.hash(g_hashperturb));
 }
 
 shared_ptr<DownstreamState> roundrobin(const ServerPolicy::NumberedServerVector& servers, const DNSQuestion* dq)
@@ -289,7 +290,7 @@ void setPoolPolicy(pools_t& pools, const string& poolName, std::shared_ptr<Serve
   } else {
     vinfolog("Setting default pool server selection policy to %s", policy->getName());
   }
-  pool->policy = policy;
+  pool->policy = std::move(policy);
 }
 
 void addServerToPool(pools_t& pools, const string& poolName, std::shared_ptr<DownstreamState> server)
@@ -376,6 +377,11 @@ std::shared_ptr<DownstreamState> ServerPolicy::getSelectedBackend(const ServerPo
       else {
         const auto& policy = getPerThreadPolicy();
         selected = policy(&serversList, &dnsq);
+      }
+
+      if (selected >= servers.size()) {
+        /* invalid offset, meaning that there is no server available */
+        return {};
       }
 
       selectedBackend = servers.at(selected).second;

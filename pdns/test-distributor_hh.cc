@@ -1,4 +1,7 @@
+#ifndef BOOST_TEST_DYN_LINK
 #define BOOST_TEST_DYN_LINK
+#endif
+
 #define BOOST_TEST_NO_MAIN
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -8,7 +11,9 @@
 #include <boost/test/unit_test.hpp>
 #include "distributor.hh"
 #include "dnspacket.hh"
-#include "namespaces.hh" 
+#include "namespaces.hh"
+
+bool g_doGssTSIG = false;
 
 BOOST_AUTO_TEST_SUITE(test_distributor_hh)
 
@@ -22,6 +27,7 @@ struct Question
   {
     return make_unique<DNSPacket>(false);
   }
+  void cleanupGSS(int){}
 };
 
 struct Backend
@@ -33,7 +39,7 @@ struct Backend
 };
 
 static std::atomic<int> g_receivedAnswers;
-static void report(std::unique_ptr<DNSPacket>& A, int B)
+static void report(std::unique_ptr<DNSPacket>& /* A */, int /* B */)
 {
   g_receivedAnswers++;
 }
@@ -50,7 +56,7 @@ BOOST_AUTO_TEST_CASE(test_distributor_basic) {
   int n;
   for(n=0; n < 100; ++n)  {
     Question q;
-    q.d_dt.set(); 
+    q.d_dt.set();
     d->question(q, report);
   }
   sleep(1);
@@ -67,7 +73,7 @@ struct BackendSlow
 };
 
 static std::atomic<int> g_receivedAnswers1;
-static void report1(std::unique_ptr<DNSPacket>& A, int B)
+static void report1(std::unique_ptr<DNSPacket>& /* A */, int /* B */)
 {
   g_receivedAnswers1++;
 }
@@ -86,7 +92,7 @@ BOOST_AUTO_TEST_CASE(test_distributor_queue) {
     // bound should be higher than max-queue-length
     for(n=0; n < 2000; ++n)  {
       Question q;
-      q.d_dt.set(); 
+      q.d_dt.set();
       d->question(q, report1);
     }
     }, DistributorFatal, [](DistributorFatal) { return true; });
@@ -101,7 +107,7 @@ struct BackendDies
   ~BackendDies()
   {
   }
-  std::unique_ptr<DNSPacket> question(Question& q)
+  std::unique_ptr<DNSPacket> question(Question& /* q */)
   {
     //  cout<<"Q: "<<q->qdomain<<endl;
     if(!d_ourcount && ++d_count == 10) {
@@ -119,7 +125,7 @@ std::atomic<int> BackendDies::s_count;
 
 std::atomic<int> g_receivedAnswers2;
 
-static void report2(std::unique_ptr<DNSPacket>& A, int B)
+static void report2(std::unique_ptr<DNSPacket>& /* A */, int /* B */)
 {
   g_receivedAnswers2++;
 }
@@ -137,7 +143,7 @@ BOOST_AUTO_TEST_CASE(test_distributor_dies) {
   try {
     for(int n=0; n < 100; ++n)  {
       Question q;
-      q.d_dt.set(); 
+      q.d_dt.set();
       q.qdomain=DNSName(std::to_string(n));
       q.qtype = QType(QType::A);
       d->question(q, report2);

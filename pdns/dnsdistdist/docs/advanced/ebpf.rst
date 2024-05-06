@@ -9,6 +9,12 @@ eBPF Socket Filtering
 .. note::
    eBPF can be used by unprivileged users lacking the ``CAP_SYS_ADMIN`` (or ``CAP_BPF``) capability on some kernels, depending on the value of the ``kernel.unprivileged_bpf_disabled`` sysctl. Since 5.15 that kernel build setting ``BPF_UNPRIV_DEFAULT_OFF`` is enabled by default, which prevents unprivileged users from using eBPF.
 
+.. note::
+   ``AppArmor`` users might need to update their policy to allow dnsdist to keep the ``CAP_SYS_ADMIN`` (or ``CAP_BPF``) capability. Adding a ``capability bpf,`` (for ``CAP_BPF``) line to the policy file is usually enough.
+
+.. note::
+   In addition to keeping the correct capability, large maps might require an increase of ``RLIMIT_MEMLOCK``, as mentioned below.
+
 This feature allows dnsdist to ask the kernel to discard incoming packets in kernel-space instead of them being copied to userspace just to be dropped, thus being a lot of faster. The current implementation supports dropping UDP and TCP queries based on the source IP and UDP datagrams on exact DNS names. We have not been able to implement suffix matching yet, due to a limit on the maximum number of EBPF instructions.
 
 The following figure show the CPU usage of dropping around 20k qps of traffic, first in userspace (34 to 36) then in kernel space with eBPF (37 to 39). The spikes are caused because the drops are triggered by dynamic rules, so the first spike is the abuse traffic before a rule is automatically inserted, and the second spike is because the rule expires automatically after 60s before being inserted again.
@@ -53,8 +59,27 @@ Finally, it's also possible to attach it to specific binds at runtime::
   > bd = getBind(0)
   > bd:attachFilter(bpf)
 
-:program:`dnsdist` also supports adding dynamic, expiring blocks to a BPF filter::
+:program:`dnsdist` also supports adding dynamic, expiring blocks to a BPF filter:
 
+.. code-block:: lua
+
+  bpf = newBPFFilter({ipv4MaxItems=1024, ipv6MaxItems=1024, qnamesMaxItems=1024})
+  setDefaultBPFFilter(bpf)
+  local dbr = dynBlockRulesGroup()
+  dbr:setQueryRate(20, 10, "Exceeded query rate", 60)
+
+  function maintenance()
+    dbr:apply()
+  end
+
+This will dynamically block all hosts that exceeded 20 queries/s as measured over the past 10 seconds, and the dynamic block will last for 60 seconds.
+
+Since 1.6.0, the default BPF filter set via :func:`setDefaultBPFFilter` will automatically get used when a "drop" dynamic block is inserted via a :ref:`DynBlockRulesGroup`, which provides a better way to combine dynamic blocks with eBPF filtering.
+Before that, it was possible to use the :func:`addBPFFilterDynBlocks` method instead:
+
+.. code-block:: lua
+
+  -- this is a legacy method, please see above for DNSdist >= 1.6.0
   bpf = newBPFFilter({ipv4MaxItems=1024, ipv6MaxItems=1024, qnamesMaxItems=1024})
   setDefaultBPFFilter(bpf)
   dbpf = newDynBPFFilter(bpf)
@@ -63,15 +88,12 @@ Finally, it's also possible to attach it to specific binds at runtime::
           dbpf:purgeExpired()
   end
 
-This will dynamically block all hosts that exceeded 20 queries/s as measured over the past 10 seconds, and the dynamic block will last for 60 seconds.
-
 The dynamic eBPF blocks and the number of queries they blocked can be seen in the web interface and retrieved from the API. Note however that eBPF dynamic objects need to be registered before they appear in the web interface or the API, using the :func:`registerDynBPFFilter` function::
 
   registerDynBPFFilter(dbpf)
 
 They can be unregistered at a later point using the :func:`unregisterDynBPFFilter` function.
-
-Since 1.6.0, the default BPF filter set via :func:`setDefaultBPFFilter` will automatically get used when a "drop" dynamic block is inserted via a :ref:`DynBlockRulesGroup`, which provides a better way to combine dynamic blocks with eBPF filtering.
+Since 1.8.2, the metrics for the BPF filter registered via :func:`setDefaultBPFFilter` are exported as well.
 
 Requirements
 ------------
@@ -79,7 +101,10 @@ Requirements
 In addition to the capabilities explained above, that feature might require an increase of the memory limit associated to a socket, via the sysctl setting ``net.core.optmem_max``.
 When attaching an eBPF program to a socket, the size of the program is checked against this limit, and the default value might not be enough.
 
-Large map sizes might also require an increase of ``RLIMIT_MEMLOCK``, which can be done by adding ``LimitMEMLOCK=infinity`` in the systemd unit file. It can also be done manually for testing purposes, in a non-permanent way, by using ``ulimit -l``.
+Large map sizes might also require an increase of ``RLIMIT_MEMLOCK``, which can be done by adding ``LimitMEMLOCK=limit`` in the systemd unit file, where limit is specified using byte as unit. It can also be done manually for testing purposes, in a non-permanent way, by using ``ulimit -l``.
+
+To change the default hard limit on ``RLIMIT_MEMLOCK`` add the following line to ``/etc/security/limits.conf`` for the user, specifying a limit in units of 1k, for example:
+  > $USER   hard    memlock   1024
 
 External program, maps and XDP filtering
 ----------------------------------------
@@ -104,3 +129,4 @@ The first, legacy format is still used because of the limitations of eBPF socket
 XDP programs are more powerful than eBPF socket filtering ones as they are not limited to accepting or denying a packet, but can immediately craft and send an answer. They are also executed a bit earlier in the kernel networking path so can provide better performance.
 
 A sample program using the maps populated by dnsdist in an external XDP program can be found in the `contrib/ directory of our git repository <https://github.com/PowerDNS/pdns/tree/master/contrib>`__. That program supports answering with a TC=1 response instead of simply dropping the packet.
+

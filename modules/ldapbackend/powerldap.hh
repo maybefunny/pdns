@@ -29,7 +29,7 @@
 #include <vector>
 #include <stdexcept>
 #include <inttypes.h>
-#include <errno.h>
+#include <cerrno>
 #include <lber.h>
 #include <ldap.h>
 
@@ -62,11 +62,11 @@ public:
     int d_msgid;
     bool d_finished;
 
-    SearchResult(const SearchResult& other);
-    SearchResult& operator=(const SearchResult& other);
-
   public:
     typedef std::unique_ptr<SearchResult> Ptr;
+
+    SearchResult(const SearchResult& other) = delete;
+    SearchResult& operator=(const SearchResult& other) = delete;
 
     SearchResult(int msgid, LDAP* ld);
     ~SearchResult();

@@ -1,15 +1,14 @@
 AC_DEFUN([PDNS_WITH_NET_SNMP], [
   AC_MSG_CHECKING([if we need to link in Net SNMP])
   AC_ARG_WITH([net-snmp],
-    AS_HELP_STRING([--with-net-snmp],[enable net snmp support @<:@default=auto@:>@]),
+    AS_HELP_STRING([--with-net-snmp],[enable net snmp support @<:@default=no@:>@]),
     [with_net_snmp=$withval],
-    [with_net_snmp=auto],
+    [with_net_snmp=no],
   )
   AC_MSG_RESULT([$with_net_snmp])
 
   AS_IF([test "x$with_net_snmp" != "xno"], [
     AS_IF([test "x$with_net_snmp" = "xyes" -o "x$with_net_snmp" = "xauto"], [
-      AC_CHECK_PROG([NET_SNMP_CFLAGS], [net-snmp-config], [`net-snmp-config --cflags`])
       AC_CHECK_PROG([NET_SNMP_LIBS], [net-snmp-config], [`net-snmp-config --netsnmp-agent-libs`])
       AC_CHECK_DECLS([snmp_select_info2], [
           AC_DEFINE([HAVE_SNMP_SELECT_INFO2], [1], [define to 1 if snmp_select_info2 is available.])

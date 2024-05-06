@@ -56,7 +56,7 @@ void setupLuaBindingsDNSCrypt(LuaContext& luaCtx, bool client)
 
       if (ctx != nullptr) {
         size_t idx = 1;
-        for (auto pair : ctx->getCertificates()) {
+        for (const auto& pair : ctx->getCertificates()) {
           result.push_back({idx++, pair});
         }
       }
@@ -101,8 +101,8 @@ void setupLuaBindingsDNSCrypt(LuaContext& luaCtx, bool client)
         boost::format fmt("%1$-3d %|5t|%2$-8d %|10t|%3$-7d %|20t|%4$-21.21s %|41t|%5$-21.21s");
         ret << (fmt % "#" % "Serial" % "Version" % "From" % "To" ) << endl;
 
-        for (auto pair : ctx->getCertificates()) {
-          const auto cert = pair->cert;
+        for (const auto& pair : ctx->getCertificates()) {
+          const auto& cert = pair->cert;
           const DNSCryptExchangeVersion version = DNSCryptContext::getExchangeVersion(cert);
 
           ret << (fmt % idx % cert.getSerial() % (version == DNSCryptExchangeVersion::VERSION1 ? 1 : 2) % DNSCryptContext::certificateDateToStr(cert.getTSStart()) % DNSCryptContext::certificateDateToStr(cert.getTSEnd())) << endl;
@@ -121,9 +121,9 @@ void setupLuaBindingsDNSCrypt(LuaContext& luaCtx, bool client)
             ctx.addNewCertificate(cert, privateKey);
           }
         }
-        catch(const std::exception& e) {
-          errlog(e.what());
-          g_outputBuffer="Error: "+string(e.what())+"\n";
+        catch (const std::exception& e) {
+          errlog("Error generating a DNSCrypt certificate: %s", e.what());
+          g_outputBuffer = "Error generating a DNSCrypt certificate: " + string(e.what()) + "\n";
         }
     });
 
@@ -152,7 +152,7 @@ void setupLuaBindingsDNSCrypt(LuaContext& luaCtx, bool client)
     luaCtx.registerFunction<uint32_t(DNSCryptCert::*)()const>("getTSStart", [](const DNSCryptCert& cert) { return ntohl(cert.getTSStart()); });
     luaCtx.registerFunction<uint32_t(DNSCryptCert::*)()const>("getTSEnd", [](const DNSCryptCert& cert) { return ntohl(cert.getTSEnd()); });
 
-    luaCtx.writeFunction("generateDNSCryptCertificate", [client](const std::string& providerPrivateKeyFile, const std::string& certificateFile, const std::string privateKeyFile, uint32_t serial, time_t begin, time_t end, boost::optional<DNSCryptExchangeVersion> version) {
+    luaCtx.writeFunction("generateDNSCryptCertificate", [client](const std::string& providerPrivateKeyFile, const std::string& certificateFile, const std::string& privateKeyFile, uint32_t serial, time_t begin, time_t end, boost::optional<DNSCryptExchangeVersion> version) {
       setLuaNoSideEffect();
       if (client) {
         return;
@@ -167,12 +167,12 @@ void setupLuaBindingsDNSCrypt(LuaContext& luaCtx, bool client)
         }
       }
       catch (const std::exception& e) {
-        errlog(e.what());
-        g_outputBuffer = "Error: " + string(e.what()) + "\n";
+        errlog("Error generating a DNSCrypt certificate: %s", e.what());
+        g_outputBuffer = "Error generating a DNSCrypt certificate: " + string(e.what()) + "\n";
       }
     });
 
-    luaCtx.writeFunction("generateDNSCryptProviderKeys", [client](const std::string& publicKeyFile, const std::string privateKeyFile) {
+    luaCtx.writeFunction("generateDNSCryptProviderKeys", [client](const std::string& publicKeyFile, const std::string& privateKeyFile) {
       setLuaNoSideEffect();
       if (client) {
         return;
@@ -195,8 +195,8 @@ void setupLuaBindingsDNSCrypt(LuaContext& luaCtx, bool client)
         g_outputBuffer = "Provider fingerprint is: " + DNSCryptContext::getProviderFingerprint(publicKey) + "\n";
       }
       catch (const std::exception& e) {
-        errlog(e.what());
-        g_outputBuffer = "Error: " + string(e.what()) + "\n";
+        errlog("Error generating a DNSCrypt provider key: %s", e.what());
+        g_outputBuffer = "Error generating a DNSCrypt provider key: " + string(e.what()) + "\n";
       }
 
       sodium_memzero(privateKey, sizeof(privateKey));
@@ -219,8 +219,8 @@ void setupLuaBindingsDNSCrypt(LuaContext& luaCtx, bool client)
         g_outputBuffer = "Provider fingerprint is: " + DNSCryptContext::getProviderFingerprint(publicKey) + "\n";
       }
       catch (const std::exception& e) {
-        errlog(e.what());
-        g_outputBuffer = "Error: " + string(e.what()) + "\n";
+        errlog("Error getting a DNSCrypt provider fingerprint: %s", e.what());
+        g_outputBuffer = "Error getting a DNSCrypt provider fingerprint: " + string(e.what()) + "\n";
       }
     });
 #endif

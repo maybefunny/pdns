@@ -57,7 +57,18 @@ public:
     return code;
   }
 
+  /**
+   * \brief Return whether we know the name of this type.
+   *
+   * This does not presume that we have an implemented a content representation for this type,
+   * for that please see DNSRecordContent::isRegisteredType().
+   */
   bool isSupportedType() const;
+  /**
+   * \brief Whether the type is either a QTYPE or Meta-Type as defined by rfc6895 section 3.1.
+   *
+   * Note that ANY is 255 and falls outside the range.
+   */
   bool isMetadataType() const;
 
   static uint16_t chartocode(const char* p);
@@ -133,6 +144,10 @@ public:
 #endif
   };
 
+  const static uint16_t rfc6895MetaLowerBound = 128;
+  const static uint16_t rfc6895MetaUpperBound = 254; // Note 255: ANY is not included
+  const static uint16_t rfc6895Reserved = 65535;
+
   const static map<const string, uint16_t> names;
   const static map<uint16_t, const string> numbers;
 
@@ -148,6 +163,11 @@ namespace std {
       return std::hash<uint16_t>{}(qtype.getCode());
     }
   };
+}
+
+inline std::ostream& operator<<(std::ostream& stream, const QType& qtype)
+{
+  return stream << qtype.toString();
 }
 
 // Used by e.g. boost multi-index

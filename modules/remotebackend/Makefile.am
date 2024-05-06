@@ -2,6 +2,7 @@ AM_CPPFLAGS += \
 	-I$(top_srcdir)/ext/json11 \
 	$(YAHTTP_CFLAGS) \
 	$(LIBCRYPTO_CFLAGS) \
+	$(LIBCRYPTO_INCLUDES) \
 	$(LIBZMQ_CFLAGS)
 
 if LUA
@@ -15,19 +16,19 @@ endif
 AM_LDFLAGS = $(THREADFLAGS)
 
 JSON11_LIBS = $(top_builddir)/ext/json11/libjson11.la
+ARC4RANDOM_LIBS = $(top_builddir)/ext/arc4random/libarc4random.la
 
 EXTRA_DIST = \
 	OBJECTFILES \
 	OBJECTLIBS \
 	testrunner.sh \
-	unittest_http.rb \
-	unittest_json.rb \
-	unittest_pipe.rb \
-	unittest_zeromq.rb \
-	unittest_post.rb \
-	unittest.rb \
-	Gemfile \
-	Gemfile.lock
+	unittest_http.py \
+	unittest_json.py \
+	unittest_pipe.py \
+	unittest_zeromq.py \
+	unittest_post.py \
+	pdns_unittest.py \
+	requirements.txt
 
 EXTRA_PROGRAMS = \
 	remotebackend_pipe.test \
@@ -64,7 +65,9 @@ TESTS_ENVIRONMENT = \
 	BOOST_TEST_LOG_LEVEL=message; \
 	export BOOST_TEST_LOG_LEVEL; \
 	REMOTEBACKEND_ZEROMQ=$(REMOTEBACKEND_ZEROMQ); \
-	export REMOTEBACKEND_ZEROMQ;
+	export REMOTEBACKEND_ZEROMQ; \
+	abs_srcdir=$(abs_srcdir)
+	export abs_srcdir;
 
 TEST_EXTENSIONS = .test
 
@@ -109,7 +112,6 @@ libtestremotebackend_la_SOURCES = \
 	../../pdns/base32.cc \
 	../../pdns/base64.cc \
 	../../pdns/dns.hh ../../pdns/dns.cc \
-	../../pdns/dns_random_urandom.cc \
 	../../pdns/dnsbackend.hh ../../pdns/dnsbackend.cc \
 	../../pdns/dnslabeltext.cc \
 	../../pdns/dnsname.cc ../../pdns/dnsname.hh \
@@ -121,6 +123,7 @@ libtestremotebackend_la_SOURCES = \
 	../../pdns/ednscookies.cc \
 	../../pdns/ednsoptions.cc ../../pdns/ednsoptions.hh \
 	../../pdns/ednssubnet.cc \
+	../../pdns/gss_context.cc ../../pdns/gss_context.hh \
 	../../pdns/iputils.cc \
 	../../pdns/json.hh ../../pdns/json.cc \
 	../../pdns/logger.cc \
@@ -175,44 +178,51 @@ libtestremotebackend_la_CPPFLAGS += \
 	$(P11KIT1_CFLAGS)
 endif
 
+if GSS_TSIG
+libtestremotebackend_la_LIBADD += \
+	$(GSS_LIBS)
+libtestremotebackend_la_CPPFLAGS+= \
+	$(GSS_CFLAGS)
+endif
+
 remotebackend_http_test_SOURCES = \
 	test-remotebackend-http.cc \
 	test-remotebackend-keys.hh \
 	test-remotebackend.cc
 
-remotebackend_http_test_LDADD = libtestremotebackend.la
+remotebackend_http_test_LDADD = libtestremotebackend.la $(ARC4RANDOM_LIBS)
 
 remotebackend_json_test_SOURCES = \
 	test-remotebackend-json.cc \
 	test-remotebackend-keys.hh \
 	test-remotebackend.cc
 
-remotebackend_json_test_LDADD = libtestremotebackend.la
+remotebackend_json_test_LDADD = libtestremotebackend.la $(ARC4RANDOM_LIBS)
 
 remotebackend_pipe_test_SOURCES = \
 	test-remotebackend-keys.hh \
 	test-remotebackend-pipe.cc \
 	test-remotebackend.cc
 
-remotebackend_pipe_test_LDADD = libtestremotebackend.la
+remotebackend_pipe_test_LDADD = libtestremotebackend.la $(ARC4RANDOM_LIBS)
 
 remotebackend_post_test_SOURCES = \
 	test-remotebackend-keys.hh \
 	test-remotebackend-post.cc \
 	test-remotebackend.cc
 
-remotebackend_post_test_LDADD = libtestremotebackend.la
+remotebackend_post_test_LDADD = libtestremotebackend.la $(ARC4RANDOM_LIBS)
 
 remotebackend_unix_test_SOURCES = \
 	test-remotebackend-keys.hh \
 	test-remotebackend-unix.cc \
 	test-remotebackend.cc
 
-remotebackend_unix_test_LDADD = libtestremotebackend.la
+remotebackend_unix_test_LDADD = libtestremotebackend.la  $(ARC4RANDOM_LIBS)
 
 remotebackend_zeromq_test_SOURCES = \
 	test-remotebackend-keys.hh \
 	test-remotebackend-zeromq.cc \
 	test-remotebackend.cc
 
-remotebackend_zeromq_test_LDADD = libtestremotebackend.la
+remotebackend_zeromq_test_LDADD = libtestremotebackend.la $(ARC4RANDOM_LIBS)

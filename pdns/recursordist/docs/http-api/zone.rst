@@ -4,7 +4,7 @@ Zones
 Zone
 ----
 
-A Zone object represents an authoritative DNS Zone.
+A Zone object represents a forward or authoritative DNS Zone.
 
 A Resource Record Set (below as "RRset") are all records for a given name and type.
 
@@ -32,7 +32,8 @@ be true:
   command line. Setting these options on the command line will
   override what has been set in the dynamically generated
   configuration files.
-* ``include-dir`` must refer to the same directory as
-  ``api-config-dir`` for the dynamic reloading to work.
+
+* For configuration changes to work :ref:`setting-include-dir` and :ref:`setting-api-config-dir` should have the same value for old-style settings.
+  When using YAML settings :ref:`setting-yaml-recursor.include_dir` and :ref:`setting-yaml-webservice.api_dir` must have a different value.
 
 .. include:: ../common/api/zone.rst

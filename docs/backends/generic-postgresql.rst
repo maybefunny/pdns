@@ -105,8 +105,7 @@ Default: yes.
 Default schema
 --------------
 
-This is the 4.3 schema.
-The `4.2 schema <https://github.com/PowerDNS/pdns/blob/rel/auth-4.2.x/modules/gpgsqlbackend/schema.pgsql.sql>`_ and the `the 4.1 schema <https://github.com/PowerDNS/pdns/blob/rel/auth-4.1.x/modules/gpgsqlbackend/schema.pgsql.sql>`_ is available on GitHub.
+This is the 4.7 schema.
 
 .. literalinclude:: ../../modules/gpgsqlbackend/schema.pgsql.sql
    :language: SQL
@@ -176,4 +175,4 @@ taken from the generic MySQL backend, and modified for syntax:
 References
 ^^^^^^^^^^
 
-See `this Github issue <https://github.com/PowerDNS/pdns/issues/5375#issuecomment-644771800>`__ for the original tests and a full working schema.
+See `this GitHub issue <https://github.com/PowerDNS/pdns/issues/5375#issuecomment-644771800>`__ for the original tests and a full working schema.

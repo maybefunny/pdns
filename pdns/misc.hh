@@ -20,11 +20,11 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 #pragma once
-#include <inttypes.h>
+#include <cinttypes>
 #include <cstring>
 #include <cstdio>
 #include <regex.h>
-#include <limits.h>
+#include <climits>
 #include <type_traits>
 
 #include <boost/algorithm/string.hpp>
@@ -34,19 +34,19 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/socket.h>
-#include <time.h>
+#include <ctime>
 #include <syslog.h>
 #include <stdexcept>
 #include <string>
-#include <ctype.h>
+#include <cctype>
 #include <vector>
 
 #include "namespaces.hh"
 
 class DNSName;
 
+// Do not change to "using TSIGHashEnum ..." until you know CodeQL does not choke on it
 typedef enum { TSIG_MD5, TSIG_SHA1, TSIG_SHA224, TSIG_SHA256, TSIG_SHA384, TSIG_SHA512, TSIG_GSS } TSIGHashEnum;
-
 namespace pdns
 {
 /**
@@ -61,34 +61,44 @@ namespace pdns
  * \return The `std::string` error message.
  */
 auto getMessageFromErrno(int errnum) -> std::string;
+
+#if defined(HAVE_LIBCRYPTO)
+namespace OpenSSL
+{
+  /**
+   * \brief Throws a `std::runtime_error` with the current OpenSSL error.
+   *
+   * \param[in] errorMessage The message to attach in addition to the OpenSSL error.
+   */
+  [[nodiscard]] auto error(const std::string& errorMessage) -> std::runtime_error;
+
+  /**
+   * \brief Throws a `std::runtime_error` with a name and the current OpenSSL error.
+   *
+   * \param[in] componentName The name of the component to mark the error message with.
+   * \param[in] errorMessage The message to attach in addition to the OpenSSL error.
+   */
+  [[nodiscard]] auto error(const std::string& componentName, const std::string& errorMessage) -> std::runtime_error;
+}
+#endif // HAVE_LIBCRYPTO
 }
 
 string nowTime();
-const string unquotify(const string &item);
+string unquotify(const string &item);
 string humanDuration(time_t passed);
 bool stripDomainSuffix(string *qname, const string &domain);
 void stripLine(string &line);
-string getHostname();
+std::optional<string> getHostname();
+std::string getCarbonHostName();
 string urlEncode(const string &text);
-int waitForData(int fd, int seconds, int useconds=0);
+int waitForData(int fileDesc, int seconds, int useconds = 0);
 int waitFor2Data(int fd1, int fd2, int seconds, int useconds, int* fd);
 int waitForMultiData(const set<int>& fds, const int seconds, const int useconds, int* fd);
-int waitForRWData(int fd, bool waitForRead, int seconds, int useconds, bool* error=nullptr, bool* disconnected=nullptr);
-uint16_t getShort(const unsigned char *p);
-uint16_t getShort(const char *p);
-uint32_t getLong(const unsigned char *p);
-uint32_t getLong(const char *p);
+int waitForRWData(int fileDesc, bool waitForRead, int seconds, int useconds, bool* error = nullptr, bool* disconnected = nullptr);
 bool getTSIGHashEnum(const DNSName& algoName, TSIGHashEnum& algoEnum);
 DNSName getTSIGAlgoName(TSIGHashEnum& algoEnum);
 
 int logFacilityToLOG(unsigned int facility);
-
-struct ServiceTuple
-{
-  string host;
-  uint16_t port;
-};
-void parseService(const string &descr, ServiceTuple &st);
 
 template<typename Container>
 void
@@ -121,9 +131,8 @@ stringtok (Container &container, string const &in,
 
 template<typename T> bool rfc1982LessThan(T a, T b)
 {
-  static_assert(std::is_unsigned<T>::value, "rfc1982LessThan only works for unsigned types");
-  typedef typename std::make_signed<T>::type signed_t;
-  return static_cast<signed_t>(a - b) < 0;
+  static_assert(std::is_unsigned_v<T>, "rfc1982LessThan only works for unsigned types");
+  return std::make_signed_t<T>(a - b) < 0;
 }
 
 // fills container with ranges, so {posbegin,posend}
@@ -167,10 +176,12 @@ const string toLower(const string &upper);
 const string toLowerCanonic(const string &upper);
 bool IpToU32(const string &str, uint32_t *ip);
 string U32ToIP(uint32_t);
-string stringerror(int);
-string stringerror();
-string itoa(int i);
-string uitoa(unsigned int i);
+
+inline string stringerror(int err = errno)
+{
+  return pdns::getMessageFromErrno(err);
+}
+
 string bitFlip(const string &str);
 
 void dropPrivs(int uid, int gid);
@@ -318,8 +329,9 @@ string makeHexDump(const string& str);
 string makeBytesFromHex(const string &in);
 
 void normalizeTV(struct timeval& tv);
-const struct timeval operator+(const struct timeval& lhs, const struct timeval& rhs);
-const struct timeval operator-(const struct timeval& lhs, const struct timeval& rhs);
+struct timeval operator+(const struct timeval& lhs, const struct timeval& rhs);
+struct timeval operator-(const struct timeval& lhs, const struct timeval& rhs);
+
 inline float makeFloat(const struct timeval& tv)
 {
   return tv.tv_sec + tv.tv_usec/1000000.0f;
@@ -401,17 +413,21 @@ struct CIStringCompare
 
 struct CIStringComparePOSIX
 {
-   bool operator() (const std::string& lhs, const std::string& rhs)
+   bool operator() (const std::string& lhs, const std::string& rhs) const
    {
-      std::string::const_iterator a,b;
       const std::locale &loc = std::locale("POSIX");
-      a=lhs.begin();b=rhs.begin();
-      while(a!=lhs.end()) {
-          if (b==rhs.end() || std::tolower(*b,loc)<std::tolower(*a,loc)) return false;
-          else if (std::tolower(*a,loc)<std::tolower(*b,loc)) return true;
-          ++a;++b;
+      auto lhsIter = lhs.begin();
+      auto rhsIter = rhs.begin();
+      while (lhsIter != lhs.end()) {
+        if (rhsIter == rhs.end() || std::tolower(*rhsIter,loc) < std::tolower(*lhsIter,loc)) {
+          return false;
+        }
+        if (std::tolower(*lhsIter,loc) < std::tolower(*rhsIter,loc)) {
+          return true;
+        }
+        ++lhsIter;++rhsIter;
       }
-      return (b!=rhs.end());
+      return rhsIter != rhs.end();
    }
 };
 
@@ -569,7 +585,7 @@ bool setTCPNoDelay(int sock);
 bool setReuseAddr(int sock);
 bool isNonBlocking(int sock);
 bool setReceiveSocketErrors(int sock, int af);
-int closesocket(int fd);
+int closesocket(int socket);
 bool setCloseOnExec(int sock);
 
 size_t getPipeBufferSize(int fd);
@@ -603,7 +619,7 @@ T valueOrEmpty(const P val) {
 
 // I'm not very OCD, but I appreciate loglines like "processing 1 delta", "processing 2 deltas" :-)
 template <typename Integer,
-typename std::enable_if_t<std::is_integral<Integer>::value, bool> = true>
+typename std::enable_if_t<std::is_integral_v<Integer>, bool> = true>
 const char* addS(Integer siz, const char* singular = "", const char *plural = "s")
 {
   if (siz == 1) {
@@ -613,7 +629,7 @@ const char* addS(Integer siz, const char* singular = "", const char *plural = "s
 }
 
 template <typename C,
-typename std::enable_if_t<std::is_class<C>::value, bool> = true>
+typename std::enable_if_t<std::is_class_v<C>, bool> = true>
 const char* addS(const C& c, const char* singular = "", const char *plural = "s")
 {
   return addS(c.size(), singular, plural);
@@ -756,7 +772,6 @@ std::vector<ComboAddress> getResolvers(const std::string& resolvConfPath);
 
 DNSName reverseNameFromIP(const ComboAddress& ip);
 
-std::string getCarbonHostName();
 size_t parseRFC1035CharString(const std::string &in, std::string &val); // from ragel
 size_t parseSVCBValueListFromParsedRFC1035CharString(const std::string &in, vector<std::string> &val); // from ragel
 size_t parseSVCBValueList(const std::string &in, vector<std::string> &val);
@@ -770,30 +785,25 @@ struct NodeOrLocatorID { uint8_t content[8]; };
 
 struct FDWrapper
 {
-  FDWrapper()
-  {
-  }
+  FDWrapper() = default;
+  FDWrapper(int desc): d_fd(desc) {}
+  FDWrapper(const FDWrapper&) = delete;
+  FDWrapper& operator=(const FDWrapper& rhs) = delete;
 
-  FDWrapper(int desc): d_fd(desc)
-  {
-  }
 
   ~FDWrapper()
   {
-    if (d_fd != -1) {
-      close(d_fd);
-      d_fd = -1;
-    }
+    reset();
   }
 
-  FDWrapper(FDWrapper&& rhs): d_fd(rhs.d_fd)
+  FDWrapper(FDWrapper&& rhs) noexcept : d_fd(rhs.d_fd)
   {
     rhs.d_fd = -1;
   }
 
-  FDWrapper& operator=(FDWrapper&& rhs)
+  FDWrapper& operator=(FDWrapper&& rhs) noexcept
   {
-    if (d_fd != -1) {
+    if (d_fd >= 0) {
       close(d_fd);
     }
     d_fd = rhs.d_fd;
@@ -801,7 +811,7 @@ struct FDWrapper
     return *this;
   }
 
-  int getHandle() const
+  [[nodiscard]] int getHandle() const
   {
     return d_fd;
   }
@@ -811,6 +821,39 @@ struct FDWrapper
     return d_fd;
   }
 
+  int reset()
+  {
+    int ret = 0;
+    if (d_fd >= 0) {
+      ret = close(d_fd);
+    }
+    d_fd = -1;
+    return ret;
+  }
+
 private:
   int d_fd{-1};
 };
+
+namespace pdns
+{
+[[nodiscard]] std::optional<std::string> visit_directory(const std::string& directory, const std::function<bool(ino_t inodeNumber, const std::string_view& name)>& visitor);
+
+struct FilePtrDeleter
+{
+  /* using a deleter instead of decltype(&fclose) has two big advantages:
+     - the deleter is included in the type and does not have to be passed
+       when creating a new object (easier to use, less memory usage, in theory
+       better inlining)
+     - we avoid the annoying "ignoring attributes on template argument ‘int (*)(FILE*)’"
+       warning from the compiler, which is there because fclose is tagged as __nonnull((1))
+  */
+  void operator()(FILE* filePtr) const noexcept {
+    fclose(filePtr);
+  }
+};
+
+using UniqueFilePtr = std::unique_ptr<FILE, FilePtrDeleter>;
+
+UniqueFilePtr openFileForWriting(const std::string& filePath, mode_t permissions, bool mustNotExist = true, bool appendIfExists = false);
+}

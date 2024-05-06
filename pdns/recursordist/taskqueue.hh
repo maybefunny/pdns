@@ -31,7 +31,7 @@ size_t hash_value(const ComboAddress&);
 }
 
 #include <boost/multi_index_container.hpp>
-#include <boost/multi_index/hashed_index.hpp>
+#include <boost/multi_index/ordered_index.hpp>
 #include <boost/multi_index/key_extractors.hpp>
 #include <boost/multi_index/member.hpp>
 #include <boost/multi_index/sequenced_index.hpp>
@@ -61,24 +61,25 @@ struct ResolveTask
   ComboAddress d_ip;
   // NS name used by DoT probe task, not part of index and not used by operator<()
   DNSName d_nsname;
+  Netmask d_netmask;
 
-  bool operator<(const ResolveTask& a) const
+  bool operator<(const ResolveTask& task) const
   {
-    return std::tie(d_qname, d_qtype, d_refreshMode, d_func, d_ip) < std::tie(a.d_qname, a.d_qtype, a.d_refreshMode, a.d_func, d_ip);
+    return std::tie(d_qname, d_qtype, d_refreshMode, d_func, d_ip, d_netmask) < std::tie(task.d_qname, task.d_qtype, task.d_refreshMode, task.d_func, task.d_ip, task.d_netmask);
   }
 
-  bool run(bool logErrors);
+  [[nodiscard]] bool run(bool logErrors) const;
 };
 
 class TaskQueue
 {
 public:
-  bool empty() const
+  [[nodiscard]] bool empty() const
   {
     return d_queue.empty();
   }
 
-  size_t size() const
+  [[nodiscard]] size_t size() const
   {
     return d_queue.size();
   }
@@ -86,12 +87,12 @@ public:
   bool push(ResolveTask&& task);
   ResolveTask pop();
 
-  uint64_t getPushes()
+  [[nodiscard]] uint64_t getPushes() const
   {
     return d_pushes;
   }
 
-  uint64_t getExpired()
+  [[nodiscard]] uint64_t getExpired() const
   {
     return d_expired;
   }
@@ -115,18 +116,17 @@ private:
   {
   };
 
-  typedef multi_index_container<
+  using queue_t = multi_index_container<
     ResolveTask,
-    indexed_by<
-      hashed_unique<tag<HashTag>,
-                    composite_key<ResolveTask,
-                                  member<ResolveTask, DNSName, &ResolveTask::d_qname>,
-                                  member<ResolveTask, uint16_t, &ResolveTask::d_qtype>,
-                                  member<ResolveTask, bool, &ResolveTask::d_refreshMode>,
-                                  member<ResolveTask, ResolveTask::TaskFunction, &ResolveTask::d_func>,
-                                  member<ResolveTask, ComboAddress, &ResolveTask::d_ip>>>,
-      sequenced<tag<SequencedTag>>>>
-    queue_t;
+    indexed_by<ordered_unique<tag<HashTag>,
+                              composite_key<ResolveTask,
+                                            member<ResolveTask, DNSName, &ResolveTask::d_qname>,
+                                            member<ResolveTask, uint16_t, &ResolveTask::d_qtype>,
+                                            member<ResolveTask, bool, &ResolveTask::d_refreshMode>,
+                                            member<ResolveTask, ResolveTask::TaskFunction, &ResolveTask::d_func>,
+                                            member<ResolveTask, ComboAddress, &ResolveTask::d_ip>,
+                                            member<ResolveTask, Netmask, &ResolveTask::d_netmask>>>,
+               sequenced<tag<SequencedTag>>>>;
 
   queue_t d_queue;
   uint64_t d_pushes{0};

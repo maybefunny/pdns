@@ -1,10 +1,10 @@
-Dynamic DNS Update (RFC2136)
-============================
+Dynamic DNS Update (RFC 2136)
+=============================
 
 Starting with the PowerDNS Authoritative Server 3.4.0, DNS update
 support is available. There are a number of items NOT supported:
 
--  There is no support for GSS\*TSIG and SIG (TSIG is supported);
+-  There is no support for SIG (TSIG and GSS\*TSIG are supported);
 -  WKS records are specifically mentioned in the RFC, we don't
    specifically care about WKS records;
 -  Anything we forgot....
@@ -45,6 +45,13 @@ be left empty to disallow everything, this then should be used in
 combination with the ``ALLOW-DNSUPDATE-FROM`` :doc:`domain metadata <domainmetadata>` setting per
 zone. Setting a range here and in ``ALLOW-DNSUPDATE-FROM`` enables updates
 from either address range.
+
+``dnsupdate-require-tsig``
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A setting to require DNS updates to be signed by a valid TSIG signature.
+The default is no, which means zones without TSIG keys can be updated by
+unauthenticated agents operating from an allowed address range.
 
 ``forward-dnsupdate``
 ~~~~~~~~~~~~~~~~~~~~~
@@ -110,30 +117,49 @@ TSIG-ALLOW-DNSUPDATE
 
 This setting allows you to set the TSIG key required to do an DNS
 update. If you have GSS-TSIG enabled, you can use Kerberos principals
-here. An example, using :program:`pdnsutil` to create the key::
+here. Here is an example using :program:`pdnsutil` to create a key named
+`test`::
 
-    $ pdnsutil generate-tsig-key test hmac-md5
-    Create new TSIG key test hmac-md5 kp4/24gyYsEzbuTVJRUMoqGFmN3LYgVDzJ/3oRSP7ys=
+    $ pdnsutil generate-tsig-key test hmac-sha512
+    Create new TSIG key test hmac-sha512 [base64-encoded key]
 
-Then adding that key with the name `test` and add the metadata::
+    $ pdnsutil list-tsig-keys | grep test
+    test. hmac-sha512. [base64-encoded key]
 
-    pdnsutil import-tsig-key test hmac-md5 'kp4/24gyYsEzbuTVJRUMoqGFmN3LYgVDzJ/3oRSP7ys='
-    pdnsutil set-meta example.org TSIG-ALLOW-DNSUPDATE test
+This adds the key with the name `test` to the zone's metadata. Note, the
+keys need to be added separately with `add-meta`, not as a comma or
+space-separated list::
 
-An example of how to use a TSIG key with the :program:`nsupdate` command::
+    $ pdnsutil add-meta example.org TSIG-ALLOW-DNSUPDATE test
+    Set 'example.org' meta TSIG-ALLOW-DNSUPDATE = test
 
-    nsupdate <<!
-    server <ip> <port>
+    $ pdnsutil get-meta example.org TSIG-ALLOW-DNSUPDATE
+    TSIG-ALLOW-DNSUPDATE = test
+
+This is an example of using the new `test` TSIG key with the :program:`nsupdate`
+command (see the manpage for :program:`nsupdate` for full details)::
+
+    $ nsupdate <<!
+    server 127.0.0.1 53
     zone example.org
-    update add test1.example.org 3600 A 203.0.113.1
-    key test kp4/24gyYsEzbuTVJRUMoqGFmN3LYgVDzJ/3oRSP7ys=
+    update add test1.example.org 3600 A 1.2.3.4
+    update add test1.example.org 3600 TXT "this is a test"
+    key hmac-sha512:test [base64-encoded key]
     send
     !
 
-If a TSIG key is set for the domain, it is required to be used for the
-update. The TSIG is an alternative means of securing updates, instead of using the
-``ALLOW-DNSUPDATE-FROM`` setting. If a TSIG key is set, and if ``ALLOW-DNSUPDATE-FROM`` is set,
-the IP(-range) of the updater still needs to be allowed via ``ALLOW-DNSUPDATE-FROM``. 
+    $ dig +noall +answer -t any test1.example.org @127.0.0.1
+    test1.example.org.	3600	IN	A	1.2.3.4
+    test1.example.org.	3600	IN	TXT	"this is a test"
+
+If any TSIG keys are listed in a zone's ``TSIG-ALLOW-DNSUPDATE`` metadata, one
+of them is required for updates. If ``ALLOW-DNSUPDATE-FROM`` is also set,
+both requirements need to be satisfied before an update will be accepted.
+
+By default, an update can add, update or delete any resource records in
+the zone.  See :ref:`dnsupdate-update-policy` for finer-grained
+control of what an update is allowed to do.
+Use :ref:`setting-dnsupdate-require-tsig` to disallow unsigned updates.
 
 .. _metadata-forward-dnsupdate:
 
@@ -186,7 +212,7 @@ logic to change the SOA is not executed.
 
 .. note::
   Powerdns will always use :ref:`metadata-soa-edit` when serving SOA
-  records, thus a query for the SOA record of the recently update domain,
+  records, thus a query for the SOA record of the recently updated domain,
   might have an unexpected result due to a SOA-EDIT setting.
 
 An example::

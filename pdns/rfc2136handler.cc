@@ -18,6 +18,8 @@
 #include "backends/gsql/ssql.hh"
 #include "communicator.hh"
 #include "query-local-address.hh"
+#include "gss_context.hh"
+#include "auth-main.hh"
 
 extern StatBag S;
 extern CommunicatorClass Communicator;
@@ -66,25 +68,31 @@ int PacketHandler::checkUpdatePrerequisites(const DNSRecord *rr, DomainInfo *di)
 // Method implements section 3.4.1 of RFC2136
 int PacketHandler::checkUpdatePrescan(const DNSRecord *rr) {
   // The RFC stats that d_class != ZCLASS, but we only support the IN class.
-  if (rr->d_class != QClass::IN && rr->d_class != QClass::NONE && rr->d_class != QClass::ANY)
+  if (rr->d_class != QClass::IN && rr->d_class != QClass::NONE && rr->d_class != QClass::ANY) {
     return RCode::FormErr;
+  }
 
   QType qtype = QType(rr->d_type);
 
-  if (! qtype.isSupportedType())
+  if (!qtype.isSupportedType()) {
     return RCode::FormErr;
+  }
 
-  if ((rr->d_class == QClass::NONE || rr->d_class == QClass::ANY) && rr->d_ttl != 0)
+  if ((rr->d_class == QClass::NONE || rr->d_class == QClass::ANY) && rr->d_ttl != 0) {
     return RCode::FormErr;
+  }
 
-  if (rr->d_class == QClass::ANY && rr->d_clen != 0)
+  if (rr->d_class == QClass::ANY && rr->d_clen != 0) {
     return RCode::FormErr;
+  }
 
-  if (qtype.isMetadataType())
-      return RCode::FormErr;
-
-  if (rr->d_class != QClass::ANY && qtype.getCode() == QType::ANY)
+  if (qtype.isMetadataType()) {
     return RCode::FormErr;
+  }
+
+  if (rr->d_class != QClass::ANY && qtype.getCode() == QType::ANY) {
+    return RCode::FormErr;
+  }
 
   return RCode::NoError;
 }
@@ -123,7 +131,7 @@ uint PacketHandler::performUpdate(const string &msgPrefix, const DNSRecord *rr, 
     if (rrType == QType::NSEC3PARAM) {
       g_log<<Logger::Notice<<msgPrefix<<"Adding/updating NSEC3PARAM for zone, resetting ordernames."<<endl;
 
-      *ns3pr = NSEC3PARAMRecordContent(rr->d_content->getZoneRepresentation(), di->zone);
+      *ns3pr = NSEC3PARAMRecordContent(rr->getContent()->getZoneRepresentation(), di->zone);
       *narrow = false; // adding a NSEC3 will cause narrow mode to be dropped, as you cannot specify that in a NSEC3PARAM record
       d_dk.setNSEC3PARAM(di->zone, *ns3pr, (*narrow));
       *haveNSEC3 = true;
@@ -151,7 +159,7 @@ uint PacketHandler::performUpdate(const string &msgPrefix, const DNSRecord *rr, 
         SOAData sdOld, sdUpdate;
         DNSResourceRecord *oldRec = &rrset.front();
         fillSOAData(oldRec->content, sdOld);
-        oldRec->setContent(rr->d_content->getZoneRepresentation());
+        oldRec->setContent(rr->getContent()->getZoneRepresentation());
         fillSOAData(oldRec->content, sdUpdate);
         if (rfc1982LessThan(sdOld.serial, sdUpdate.serial)) {
           di->backend->replaceRRSet(di->id, oldRec->qname, oldRec->qtype, rrset);
@@ -166,9 +174,9 @@ uint PacketHandler::performUpdate(const string &msgPrefix, const DNSRecord *rr, 
       } else if (rrType == QType::CNAME) {
         int changedCNames = 0;
         for (auto& i : rrset) {
-          if (i.ttl != rr->d_ttl || i.content != rr->d_content->getZoneRepresentation()) {
+          if (i.ttl != rr->d_ttl || i.content != rr->getContent()->getZoneRepresentation()) {
             i.ttl = rr->d_ttl;
-            i.setContent(rr->d_content->getZoneRepresentation());
+            i.setContent(rr->getContent()->getZoneRepresentation());
             changedCNames++;
           }
         }
@@ -190,7 +198,7 @@ uint PacketHandler::performUpdate(const string &msgPrefix, const DNSRecord *rr, 
             rrType.getCode() == QType::SRV) {
           lowerCase = true;
         }
-        string content = rr->d_content->getZoneRepresentation();
+        string content = rr->getContent()->getZoneRepresentation();
         if (lowerCase) content = toLower(content);
         for (auto& i : rrset) {
           string icontent = i.getZoneRepresentation();
@@ -369,7 +377,7 @@ uint PacketHandler::performUpdate(const string &msgPrefix, const DNSRecord *rr, 
       if (rr->d_class == QClass::ANY)
         d_dk.unsetNSEC3PARAM(rr->d_name);
       else if (rr->d_class == QClass::NONE) {
-        NSEC3PARAMRecordContent nsec3rr(rr->d_content->getZoneRepresentation(), di->zone);
+        NSEC3PARAMRecordContent nsec3rr(rr->getContent()->getZoneRepresentation(), di->zone);
         if (*haveNSEC3 && ns3pr->getZoneRepresentation() == nsec3rr.getZoneRepresentation())
           d_dk.unsetNSEC3PARAM(rr->d_name);
         else
@@ -402,14 +410,14 @@ uint PacketHandler::performUpdate(const string &msgPrefix, const DNSRecord *rr, 
         auto repr = rec.getZoneRepresentation();
         if (rec.qtype == QType::TXT) {
           DLOG(g_log<<msgPrefix<<"Adjusting TXT content from ["<<repr<<"]"<<endl);
-          auto drc = DNSRecordContent::mastermake(rec.qtype.getCode(), QClass::IN, repr);
+          auto drc = DNSRecordContent::make(rec.qtype.getCode(), QClass::IN, repr);
           auto ser = drc->serialize(rec.qname, true, true);
           auto rc = DNSRecordContent::deserialize(rec.qname, rec.qtype.getCode(), ser);
           repr = rc->getZoneRepresentation(true);
           DLOG(g_log<<msgPrefix<<"Adjusted TXT content to ["<<repr<<"]"<<endl);
         }
-        DLOG(g_log<<msgPrefix<<"Matching RR in RRset - (adjusted) representation from request=["<<repr<<"], rr->d_content->getZoneRepresentation()=["<<rr->d_content->getZoneRepresentation()<<"]"<<endl);
-        if (rrType == rec.qtype && repr == rr->d_content->getZoneRepresentation())
+        DLOG(g_log<<msgPrefix<<"Matching RR in RRset - (adjusted) representation from request=["<<repr<<"], rr->getContent()->getZoneRepresentation()=["<<rr->getContent()->getZoneRepresentation()<<"]"<<endl);
+        if (rrType == rec.qtype && repr == rr->getContent()->getZoneRepresentation())
           recordsToDelete.push_back(rec);
         else
           rrset.push_back(rec);
@@ -537,12 +545,12 @@ int PacketHandler::forwardPacket(const string &msgPrefix, const DNSPacket& p, co
   B.getDomainMetadata(p.qdomain, "FORWARD-DNSUPDATE", forward);
 
   if (forward.size() == 0 && ! ::arg().mustDo("forward-dnsupdate")) {
-    g_log<<Logger::Notice<<msgPrefix<<"Not configured to forward to master, returning Refused."<<endl;
+    g_log << Logger::Notice << msgPrefix << "Not configured to forward to primary, returning Refused." << endl;
     return RCode::Refused;
   }
 
-  for(const auto& remote : di.masters) {
-    g_log<<Logger::Notice<<msgPrefix<<"Forwarding packet to master "<<remote<<endl;
+  for (const auto& remote : di.primaries) {
+    g_log << Logger::Notice << msgPrefix << "Forwarding packet to primary " << remote << endl;
 
     if (!pdns::isQueryLocalAddressFamilyEnabled(remote.sin4.sin_family)) {
       continue;
@@ -560,7 +568,7 @@ int PacketHandler::forwardPacket(const string &msgPrefix, const DNSPacket& p, co
         closesocket(sock);
       }
       catch(const PDNSException& e) {
-        g_log<<Logger::Error<<"Error closing master forwarding socket after connect() failed: "<<e.reason<<endl;
+        g_log << Logger::Error << "Error closing primary forwarding socket after connect() failed: " << e.reason << endl;
       }
       continue;
     }
@@ -577,29 +585,29 @@ int PacketHandler::forwardPacket(const string &msgPrefix, const DNSPacket& p, co
         closesocket(sock);
       }
       catch(const PDNSException& e) {
-        g_log<<Logger::Error<<"Error closing master forwarding socket after write() failed: "<<e.reason<<endl;
+        g_log << Logger::Error << "Error closing primary forwarding socket after write() failed: " << e.reason << endl;
       }
       continue;
     }
 
     int res = waitForData(sock, 10, 0);
     if (!res) {
-      g_log<<Logger::Error<<msgPrefix<<"Timeout waiting for reply from master at "<<remote.toStringWithPort()<<endl;
+      g_log << Logger::Error << msgPrefix << "Timeout waiting for reply from primary at " << remote.toStringWithPort() << endl;
       try {
         closesocket(sock);
       }
       catch(const PDNSException& e) {
-        g_log<<Logger::Error<<"Error closing master forwarding socket after a timeout occurred: "<<e.reason<<endl;
+        g_log << Logger::Error << "Error closing primary forwarding socket after a timeout occurred: " << e.reason << endl;
       }
       continue;
     }
     if (res < 0) {
-      g_log<<Logger::Error<<msgPrefix<<"Error waiting for answer from master at "<<remote.toStringWithPort()<<", error:"<<stringerror()<<endl;
+      g_log << Logger::Error << msgPrefix << "Error waiting for answer from primary at " << remote.toStringWithPort() << ", error:" << stringerror() << endl;
       try {
         closesocket(sock);
       }
       catch(const PDNSException& e) {
-        g_log<<Logger::Error<<"Error closing master forwarding socket after an error occurred: "<<e.reason<<endl;
+        g_log << Logger::Error << "Error closing primary forwarding socket after an error occurred: " << e.reason << endl;
       }
       continue;
     }
@@ -608,12 +616,12 @@ int PacketHandler::forwardPacket(const string &msgPrefix, const DNSPacket& p, co
     ssize_t recvRes;
     recvRes = recv(sock, &lenBuf, sizeof(lenBuf), 0);
     if (recvRes < 0 || static_cast<size_t>(recvRes) < sizeof(lenBuf)) {
-      g_log<<Logger::Error<<msgPrefix<<"Could not receive data (length) from master at "<<remote.toStringWithPort()<<", error:"<<stringerror()<<endl;
+      g_log << Logger::Error << msgPrefix << "Could not receive data (length) from primary at " << remote.toStringWithPort() << ", error:" << stringerror() << endl;
       try {
         closesocket(sock);
       }
       catch(const PDNSException& e) {
-        g_log<<Logger::Error<<"Error closing master forwarding socket after recv() failed: "<<e.reason<<endl;
+        g_log << Logger::Error << "Error closing primary forwarding socket after recv() failed: " << e.reason << endl;
       }
       continue;
     }
@@ -622,12 +630,12 @@ int PacketHandler::forwardPacket(const string &msgPrefix, const DNSPacket& p, co
     buffer.resize(packetLen);
     recvRes = recv(sock, &buffer.at(0), packetLen, 0);
     if (recvRes < 0) {
-      g_log<<Logger::Error<<msgPrefix<<"Could not receive data (dnspacket) from master at "<<remote.toStringWithPort()<<", error:"<<stringerror()<<endl;
+      g_log << Logger::Error << msgPrefix << "Could not receive data (dnspacket) from primary at " << remote.toStringWithPort() << ", error:" << stringerror() << endl;
       try {
         closesocket(sock);
       }
       catch(const PDNSException& e) {
-        g_log<<Logger::Error<<"Error closing master forwarding socket after recv() failed: "<<e.reason<<endl;
+        g_log << Logger::Error << "Error closing primary forwarding socket after recv() failed: " << e.reason << endl;
       }
       continue;
     }
@@ -635,7 +643,7 @@ int PacketHandler::forwardPacket(const string &msgPrefix, const DNSPacket& p, co
       closesocket(sock);
     }
     catch(const PDNSException& e) {
-      g_log<<Logger::Error<<"Error closing master forwarding socket: "<<e.reason<<endl;
+      g_log << Logger::Error << "Error closing primary forwarding socket: " << e.reason << endl;
     }
 
     try {
@@ -644,20 +652,20 @@ int PacketHandler::forwardPacket(const string &msgPrefix, const DNSPacket& p, co
       return mdp.d_header.rcode;
     }
     catch (...) {
-      g_log<<Logger::Error<<msgPrefix<<"Failed to parse response packet from master at "<<remote.toStringWithPort()<<endl;
+      g_log << Logger::Error << msgPrefix << "Failed to parse response packet from primary at " << remote.toStringWithPort() << endl;
       continue;
     }
   }
-  g_log<<Logger::Error<<msgPrefix<<"Failed to forward packet to master(s). Returning ServFail."<<endl;
+  g_log << Logger::Error << msgPrefix << "Failed to forward packet to primary(s). Returning ServFail." << endl;
   return RCode::ServFail;
 
 }
 
-int PacketHandler::processUpdate(DNSPacket& p) {
+int PacketHandler::processUpdate(DNSPacket& packet) { // NOLINT(readability-function-cognitive-complexity)
   if (! ::arg().mustDo("dnsupdate"))
     return RCode::Refused;
 
-  string msgPrefix="UPDATE (" + itoa(p.d.id) + ") from " + p.getRemoteString() + " for " + p.qdomain.toLogString() + ": ";
+  string msgPrefix="UPDATE (" + std::to_string(packet.d.id) + ") from " + packet.getRemoteString() + " for " + packet.qdomain.toLogString() + ": ";
   g_log<<Logger::Info<<msgPrefix<<"Processing started."<<endl;
 
   // if there is policy, we delegate all checks to it
@@ -665,7 +673,7 @@ int PacketHandler::processUpdate(DNSPacket& p) {
 
     // Check permissions - IP based
     vector<string> allowedRanges;
-    B.getDomainMetadata(p.qdomain, "ALLOW-DNSUPDATE-FROM", allowedRanges);
+    B.getDomainMetadata(packet.qdomain, "ALLOW-DNSUPDATE-FROM", allowedRanges);
     if (! ::arg()["allow-dnsupdate-from"].empty())
       stringtok(allowedRanges, ::arg()["allow-dnsupdate-from"], ", \t" );
 
@@ -674,7 +682,7 @@ int PacketHandler::processUpdate(DNSPacket& p) {
       ng.addMask(i);
     }
 
-    if ( ! ng.match(p.getInnerRemote())) {
+    if ( ! ng.match(packet.getInnerRemote())) {
       g_log<<Logger::Error<<msgPrefix<<"Remote not listed in allow-dnsupdate-from or domainmetadata. Sending REFUSED"<<endl;
       return RCode::Refused;
     }
@@ -682,22 +690,35 @@ int PacketHandler::processUpdate(DNSPacket& p) {
 
     // Check permissions - TSIG based.
     vector<string> tsigKeys;
-    B.getDomainMetadata(p.qdomain, "TSIG-ALLOW-DNSUPDATE", tsigKeys);
+    B.getDomainMetadata(packet.qdomain, "TSIG-ALLOW-DNSUPDATE", tsigKeys);
     if (tsigKeys.size() > 0) {
       bool validKey = false;
 
       TSIGRecordContent trc;
       DNSName inputkey;
       string message;
-      if (! p.getTSIGDetails(&trc,  &inputkey)) {
+      if (! packet.getTSIGDetails(&trc,  &inputkey)) {
         g_log<<Logger::Error<<msgPrefix<<"TSIG key required, but packet does not contain key. Sending REFUSED"<<endl;
         return RCode::Refused;
       }
-
-      for(const auto& key: tsigKeys) {
-        if (inputkey == DNSName(key)) { // because checkForCorrectTSIG has already been performed earlier on, if the names of the ky match with the domain given. THis is valid.
-          validKey=true;
-          break;
+#ifdef ENABLE_GSS_TSIG
+      if (g_doGssTSIG && packet.d_tsig_algo == TSIG_GSS) {
+        GssName inputname(packet.d_peer_principal); // match against principal since GSS requires that
+        for(const auto& key: tsigKeys) {
+          if (inputname.match(key)) {
+            validKey = true;
+            break;
+          }
+        }
+      }
+      else
+#endif
+        {
+        for(const auto& key: tsigKeys) {
+          if (inputkey == DNSName(key)) { // because checkForCorrectTSIG has already been performed earlier on, if the name of the key matches with the domain given it is valid.
+            validKey=true;
+            break;
+          }
         }
       }
 
@@ -705,41 +726,45 @@ int PacketHandler::processUpdate(DNSPacket& p) {
         g_log<<Logger::Error<<msgPrefix<<"TSIG key ("<<inputkey<<") required, but no matching key found in domainmetadata, tried "<<tsigKeys.size()<<". Sending REFUSED"<<endl;
         return RCode::Refused;
       }
+    } else if(::arg().mustDo("dnsupdate-require-tsig")) {
+      g_log<<Logger::Error<<msgPrefix<<"TSIG key required, but domain is not secured with TSIG. Sending REFUSED"<<endl;
+      return RCode::Refused;
     }
 
-    if (tsigKeys.size() == 0 && p.d_havetsig)
+    if (tsigKeys.empty() && packet.d_havetsig) {
       g_log<<Logger::Warning<<msgPrefix<<"TSIG is provided, but domain is not secured with TSIG. Processing continues"<<endl;
+    }
 
   }
 
   // RFC2136 uses the same DNS Header and Message as defined in RFC1035.
   // This means we can use the MOADNSParser to parse the incoming packet. The result is that we have some different
   // variable names during the use of our MOADNSParser.
-  MOADNSParser mdp(false, p.getString());
+  MOADNSParser mdp(false, packet.getString());
   if (mdp.d_header.qdcount != 1) {
     g_log<<Logger::Warning<<msgPrefix<<"Zone Count is not 1, sending FormErr"<<endl;
     return RCode::FormErr;
   }
 
-  if (p.qtype.getCode() != QType::SOA) { // RFC2136 2.3 - ZTYPE must be SOA
+  if (packet.qtype.getCode() != QType::SOA) { // RFC2136 2.3 - ZTYPE must be SOA
     g_log<<Logger::Warning<<msgPrefix<<"Query ZTYPE is not SOA, sending FormErr"<<endl;
     return RCode::FormErr;
   }
 
-  if (p.qclass != QClass::IN) {
+  if (packet.qclass != QClass::IN) {
     g_log<<Logger::Warning<<msgPrefix<<"Class is not IN, sending NotAuth"<<endl;
     return RCode::NotAuth;
   }
 
   DomainInfo di;
   di.backend=nullptr;
-  if(!B.getDomainInfo(p.qdomain, di) || !di.backend) {
-    g_log<<Logger::Error<<msgPrefix<<"Can't determine backend for domain '"<<p.qdomain<<"' (or backend does not support DNS update operation)"<<endl;
+  if(!B.getDomainInfo(packet.qdomain, di) || (di.backend == nullptr)) {
+    g_log<<Logger::Error<<msgPrefix<<"Can't determine backend for domain '"<<packet.qdomain<<"' (or backend does not support DNS update operation)"<<endl;
     return RCode::NotAuth;
   }
 
-  if (di.kind == DomainInfo::Slave)
-    return forwardPacket(msgPrefix, p, di);
+  if (di.kind == DomainInfo::Secondary)
+    return forwardPacket(msgPrefix, packet, di);
 
   // Check if all the records provided are within the zone
   for(const auto & answer : mdp.d_answers) {
@@ -758,8 +783,8 @@ int PacketHandler::processUpdate(DNSPacket& p) {
 
   std::lock_guard<std::mutex> l(s_rfc2136lock); //TODO: i think this lock can be per zone, not for everything
   g_log<<Logger::Info<<msgPrefix<<"starting transaction."<<endl;
-  if (!di.backend->startTransaction(p.qdomain, -1)) { // Not giving the domain_id means that we do not delete the existing records.
-    g_log<<Logger::Error<<msgPrefix<<"Backend for domain "<<p.qdomain<<" does not support transaction. Can't do Update packet."<<endl;
+  if (!di.backend->startTransaction(packet.qdomain, -1)) { // Not giving the domain_id means that we do not delete the existing records.
+    g_log<<Logger::Error<<msgPrefix<<"Backend for domain "<<packet.qdomain<<" does not support transaction. Can't do Update packet."<<endl;
     return RCode::NotImp;
   }
 
@@ -880,7 +905,7 @@ int PacketHandler::processUpdate(DNSPacket& p) {
       if (rr->d_place == DNSResourceRecord::AUTHORITY) {
         /* see if it's permitted by policy */
         if (this->d_update_policy_lua != nullptr) {
-          if (this->d_update_policy_lua->updatePolicy(rr->d_name, QType(rr->d_type), di.zone, p) == false) {
+          if (!this->d_update_policy_lua->updatePolicy(rr->d_name, QType(rr->d_type), di.zone, packet)) {
             g_log<<Logger::Warning<<msgPrefix<<"Refusing update for " << rr->d_name << "/" << QType(rr->d_type).toString() << ": Not permitted by policy"<<endl;
             continue;
           } else {
@@ -941,7 +966,7 @@ int PacketHandler::processUpdate(DNSPacket& p) {
       if (nsRRInZone.size() > nsRRtoDelete.size()) { // only delete if the NS's we delete are less then what we have in the zone (3.4.2.4)
         for (auto& inZone: nsRRInZone) {
           for (auto& rr: nsRRtoDelete) {
-            if (inZone.getZoneRepresentation() == (rr)->d_content->getZoneRepresentation())
+            if (inZone.getZoneRepresentation() == (rr)->getContent()->getZoneRepresentation())
               changedRecords += performUpdate(msgPrefix, rr, &di, isPresigned, &narrow, &haveNSEC3, &ns3pr, &updatedSerial);
           }
         }
@@ -968,10 +993,10 @@ int PacketHandler::processUpdate(DNSPacket& p) {
       zone.append("$");
       purgeAuthCaches(zone);
 
-      // Notify slaves
-      if (di.kind == DomainInfo::Master) {
+      // Notify secondaries
+      if (di.kind == DomainInfo::Primary) {
         vector<string> notify;
-        B.getDomainMetadata(p.qdomain, "NOTIFY-DNSUPDATE", notify);
+        B.getDomainMetadata(packet.qdomain, "NOTIFY-DNSUPDATE", notify);
         if (!notify.empty() && notify.front() == "1") {
           Communicator.notifyDomain(di.zone, &B);
         }

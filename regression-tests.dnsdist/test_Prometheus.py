@@ -3,13 +3,13 @@ import os
 import requests
 import subprocess
 import unittest
-from dnsdisttests import DNSDistTest
+from dnsdisttests import DNSDistTest, pickAvailablePort
 
 @unittest.skipIf('SKIP_PROMETHEUS_TESTS' in os.environ, 'Prometheus tests are disabled')
 class TestPrometheus(DNSDistTest):
 
     _webTimeout = 2.0
-    _webServerPort = 8083
+    _webServerPort = pickAvailablePort()
     _webServerBasicAuthPassword = 'secret'
     _webServerBasicAuthPasswordHashed = '$scrypt$ln=10,p=1,r=8$6DKLnvUYEeXWh3JNOd3iwg==$kSrhdHaRbZ7R74q3lGBqO1xetgxRxhmWzYJ2Qvfm7JM='
     _webServerAPIKey = 'apisecret'
@@ -19,6 +19,15 @@ class TestPrometheus(DNSDistTest):
     newServer{address="127.0.0.1:%s"}
     webserver("127.0.0.1:%s")
     setWebserverConfig({password="%s", apiKey="%s"})
+    pc = newPacketCache(100, {maxTTL=86400, minTTL=1})
+    getPool(""):setCache(pc)
+
+    -- test custom metrics as well
+    declareMetric('custom-metric1', 'counter', 'Custom counter')
+    incMetric('custom-metric1')
+    declareMetric('custom-metric2', 'gauge', 'Custom gauge')
+    -- and custom names
+    declareMetric('custom-metric3', 'counter', 'Custom counter', 'custom_prometheus_name')
     """
 
     def checkPrometheusContentBasic(self, content):
@@ -33,8 +42,34 @@ class TestPrometheus(DNSDistTest):
             elif not line.startswith('#'):
                 tokens = line.split(' ')
                 self.assertEqual(len(tokens), 2)
-                if not line.startswith('dnsdist_'):
+                if not line.startswith('dnsdist_') and not line.startswith('custom_prometheus_name'):
                     raise AssertionError('Expecting prometheus metric to be prefixed by \'dnsdist_\', got: "%s"' % (line))
+
+    def checkMetric(self, content, name, expectedType, expectedValue):
+        typeFound = False
+        helpFound = False
+        valueFound = False
+        for line in content.splitlines():
+            if name in str(line):
+                tokens = line.split(' ')
+                if line.startswith('# HELP'):
+                    self.assertGreaterEqual(len(tokens), 4)
+                    if tokens[2] == name:
+                        helpFound = True
+                elif line.startswith('# TYPE'):
+                    self.assertEqual(len(tokens), 4)
+                    if tokens[2] == name:
+                        typeFound = True
+                        self.assertEqual(tokens[3], expectedType)
+                elif not line.startswith('#'):
+                    self.assertEqual(len(tokens), 2)
+                    if tokens[0] == name:
+                        valueFound = True
+                        self.assertEqual(int(tokens[1]), expectedValue)
+
+        self.assertTrue(typeFound)
+        self.assertTrue(helpFound)
+        self.assertTrue(valueFound)
 
     def checkPrometheusContentPromtool(self, content):
         output = None
@@ -64,3 +99,6 @@ class TestPrometheus(DNSDistTest):
         self.assertEqual(r.status_code, 200)
         self.checkPrometheusContentBasic(r.text)
         self.checkPrometheusContentPromtool(r.content)
+        self.checkMetric(r.text, 'dnsdist_custom_metric1', 'counter', 1)
+        self.checkMetric(r.text, 'dnsdist_custom_metric2', 'gauge', 0)
+        self.checkMetric(r.text, 'custom_prometheus_name', 'counter', 0)

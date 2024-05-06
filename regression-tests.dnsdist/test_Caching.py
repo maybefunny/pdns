@@ -4,15 +4,16 @@ import time
 import dns
 import clientsubnetoption
 import cookiesoption
-from dnsdisttests import DNSDistTest
+import requests
+from dnsdisttests import DNSDistTest, pickAvailablePort
 
 class TestCaching(DNSDistTest):
 
     _config_template = """
     pc = newPacketCache(100, {maxTTL=86400, minTTL=1})
     getPool(""):setCache(pc)
-    addAction(makeRule("nocache.cache.tests.powerdns.com."), SetSkipCacheAction())
-    addResponseAction(makeRule("nocache-response.cache.tests.powerdns.com."), SetSkipCacheResponseAction())
+    addAction(SuffixMatchNodeRule("nocache.cache.tests.powerdns.com."), SetSkipCacheAction())
+    addResponseAction(SuffixMatchNodeRule("nocache-response.cache.tests.powerdns.com."), SetSkipCacheResponseAction())
     function skipViaLua(dq)
         dq.skipCache = true
         return DNSAction.None, ""
@@ -218,6 +219,80 @@ class TestCaching(DNSDistTest):
                                     dns.rdatatype.AAAA,
                                     '::1')
         response.answer.append(rrset)
+
+        for _ in range(numberOfQueries):
+            for method in ("sendUDPQuery", "sendTCPQuery"):
+                sender = getattr(self, method)
+                (receivedQuery, receivedResponse) = sender(query, response)
+                self.assertTrue(receivedQuery)
+                self.assertTrue(receivedResponse)
+                receivedQuery.id = query.id
+                self.assertEqual(query, receivedQuery)
+                self.assertEqual(receivedResponse, response)
+
+        for key in self._responsesCounter:
+            value = self._responsesCounter[key]
+            self.assertEqual(value, numberOfQueries)
+
+    def testAXFRResponse(self):
+        """
+        Cache: AXFR should not be cached
+
+        dnsdist should not cache responses to AXFR queries.
+        """
+        name = 'axfr.cache.tests.powerdns.com.'
+        query = dns.message.make_query(name, 'AXFR', 'IN')
+        response = dns.message.make_response(query)
+        soa = dns.rrset.from_text(name,
+                                  60,
+                                  dns.rdataclass.IN,
+                                  dns.rdatatype.SOA,
+                                  'ns.' + name + ' hostmaster.' + name + ' 1 3600 3600 3600 60')
+        response.answer.append(soa)
+        response.answer.append(dns.rrset.from_text(name,
+                                                   60,
+                                                   dns.rdataclass.IN,
+                                                   dns.rdatatype.A,
+                                                   '192.0.2.1'))
+        response.answer.append(soa)
+        numberOfQueries = 5
+
+        for _ in range(numberOfQueries):
+            for method in ("sendUDPQuery", "sendTCPQuery"):
+                sender = getattr(self, method)
+                (receivedQuery, receivedResponse) = sender(query, response)
+                self.assertTrue(receivedQuery)
+                self.assertTrue(receivedResponse)
+                receivedQuery.id = query.id
+                self.assertEqual(query, receivedQuery)
+                self.assertEqual(receivedResponse, response)
+
+        for key in self._responsesCounter:
+            value = self._responsesCounter[key]
+            self.assertEqual(value, numberOfQueries)
+
+    def testIXFRResponse(self):
+        """
+        Cache: IXFR should not be cached
+
+        dnsdist should not cache responses to IXFR queries.
+        """
+        name = 'ixfr.cache.tests.powerdns.com.'
+        query = dns.message.make_query(name, 'IXFR', 'IN')
+        response = dns.message.make_response(query)
+        soa = dns.rrset.from_text(name,
+                                  60,
+                                  dns.rdataclass.IN,
+                                  dns.rdatatype.SOA,
+                                  'ns.' + name + ' hostmaster.' + name + ' 1 3600 3600 3600 60')
+        response.answer.append(soa)
+        response.answer.append(dns.rrset.from_text(name,
+                                                   60,
+                                                   dns.rdataclass.IN,
+                                                   dns.rdatatype.A,
+                                                   '192.0.2.1'))
+        response.answer.append(soa)
+        numberOfQueries = 5
 
         for _ in range(numberOfQueries):
             for method in ("sendUDPQuery", "sendTCPQuery"):
@@ -849,6 +924,7 @@ class TestCachingHashingCookies(DNSDistTest):
 
 class TestTempFailureCacheTTLAction(DNSDistTest):
 
+    _extraStartupSleep = 1
     _config_template = """
     pc = newPacketCache(100, {maxTTL=86400, minTTL=1})
     getPool(""):setCache(pc)
@@ -1212,7 +1288,7 @@ class TestCachingStaleExpungePrevented(DNSDistTest):
     _consoleKeyB64 = base64.b64encode(_consoleKey).decode('ascii')
     _config_params = ['_consoleKeyB64', '_consolePort', '_testServerPort']
     _config_template = """
-    pc = newPacketCache(100, {maxTTL=86400, minTTL=1, temporaryFailureTTL=0, staleTTL=60, dontAge=false, numberOfShards=1, deferrableInsertLock=true, maxNegativeTTL=3600, ecsParsing=false, keepStaleData=true})
+    pc = newPacketCache(100, {maxTTL=86400, minTTL=1, temporaryFailureTTL=0, staleTTL=60, dontAge=false, numberOfShards=1, deferrableInsertLock=true, maxNegativeTTL=3600, parseECS=false, keepStaleData=true})
     getPool(""):setCache(pc)
     setStaleCacheEntriesTTL(600)
     -- try to remove all expired entries
@@ -2706,3 +2782,199 @@ class TestCachingBackendSettingRD(DNSDistTest):
             self.assertTrue(receivedQuery)
             self.assertTrue(receivedResponse)
             self.assertEqual(receivedResponse, expectedResponse)
+
+class TestAPICache(DNSDistTest):
+    _webTimeout = 2.0
+    _webServerPort = pickAvailablePort()
+    _webServerBasicAuthPassword = 'secret'
+    _webServerBasicAuthPasswordHashed = '$scrypt$ln=10,p=1,r=8$6DKLnvUYEeXWh3JNOd3iwg==$kSrhdHaRbZ7R74q3lGBqO1xetgxRxhmWzYJ2Qvfm7JM='
+    _webServerAPIKey = 'apisecret'
+    _webServerAPIKeyHashed = '$scrypt$ln=10,p=1,r=8$9v8JxDfzQVyTpBkTbkUqYg==$bDQzAOHeK1G9UvTPypNhrX48w974ZXbFPtRKS34+aso='
+    _config_params = ['_testServerPort', '_webServerPort', '_webServerBasicAuthPasswordHashed', '_webServerAPIKeyHashed']
+    _config_template = """
+    newServer{address="127.0.0.1:%s"}
+    webserver("127.0.0.1:%s")
+    setWebserverConfig({password="%s", apiKey="%s"})
+    pc = newPacketCache(100)
+    getPool(""):setCache(pc)
+    getPool("pool-with-cache"):setCache(pc)
+    getPool("pool-without-cache")
+    """
+
+    def testCacheClearingViaAPI(self):
+        """
+        Cache: Clear cache via API
+        """
+        headers = {'x-api-key': self._webServerAPIKey}
+        url = 'http://127.0.0.1:' + str(self._webServerPort) + '/api/v1/cache'
+        name = 'cache-api.cache.tests.powerdns.com.'
+        query = dns.message.make_query(name, 'AAAA', 'IN')
+        response = dns.message.make_response(query)
+        rrset = dns.rrset.from_text(name,
+                                    3600,
+                                    dns.rdataclass.IN,
+                                    dns.rdatatype.AAAA,
+                                    '::1')
+        response.answer.append(rrset)
+
+        # first query to fill the cache
+        (receivedQuery, receivedResponse) = self.sendUDPQuery(query, response)
+        self.assertTrue(receivedQuery)
+        self.assertTrue(receivedResponse)
+        receivedQuery.id = query.id
+        self.assertEqual(query, receivedQuery)
+        self.assertEqual(receivedResponse, response)
+
+        # second query should be a hit
+        (_, receivedResponse) = self.sendUDPQuery(query, response=None, useQueue=False)
+        self.assertEqual(receivedResponse, response)
+
+        # GET should on the cache API should yield a 400
+        r = requests.get(url + '?pool=pool-without-cache&name=cache-api.cache.tests.powerdns.com.&type=AAAA', headers=headers, timeout=self._webTimeout)
+        self.assertEqual(r.status_code, 400)
+
+        # different pool
+        r = requests.delete(url + '?pool=pool-without-cache&name=cache-api.cache.tests.powerdns.com.&type=AAAA', headers=headers, timeout=self._webTimeout)
+        self.assertEqual(r.status_code, 404)
+
+        # no 'pool'
+        r = requests.delete(url + '?name=cache-api.cache.tests.powerdns.com.&type=AAAA', headers=headers, timeout=self._webTimeout)
+        self.assertEqual(r.status_code, 400)
+
+        # no 'name'
+        r = requests.delete(url + '?pool=pool-without-cache&type=AAAA', headers=headers, timeout=self._webTimeout)
+        self.assertEqual(r.status_code, 400)
+
+        # invalid name (label is too long)
+        r = requests.delete(url + '?pool=&name=' + 'a'*65, headers=headers, timeout=self._webTimeout)
+        self.assertEqual(r.status_code, 400)
+
+        # different name
+        r = requests.delete(url + '?pool=&name=not-cache-api.cache.tests.powerdns.com.', headers=headers, timeout=self._webTimeout)
+        self.assertTrue(r)
+        self.assertEqual(r.status_code, 200)
+        content = r.json()
+        self.assertIn('count', content)
+        self.assertEqual(int(content['count']), 0)
+
+        # different type
+        r = requests.delete(url + '?pool=&name=cache-api.cache.tests.powerdns.com.&type=A', headers=headers, timeout=self._webTimeout)
+        self.assertTrue(r)
+        self.assertEqual(r.status_code, 200)
+        content = r.json()
+        self.assertIn('count', content)
+        self.assertEqual(int(content['count']), 0)
+
+        # should still be a hit
+        (_, receivedResponse) = self.sendUDPQuery(query, response=None, useQueue=False)
+        self.assertEqual(receivedResponse, response)
+
+        # remove
+        r = requests.delete(url + '?pool=&name=cache-api.cache.tests.powerdns.com.&type=AAAA', headers=headers, timeout=self._webTimeout)
+        self.assertTrue(r)
+        self.assertEqual(r.status_code, 200)
+        content = r.json()
+        self.assertIn('count', content)
+        self.assertEqual(int(content['count']), 1)
+
+        # should be a miss
+        (receivedQuery, receivedResponse) = self.sendUDPQuery(query, response)
+        self.assertTrue(receivedQuery)
+        self.assertTrue(receivedResponse)
+        receivedQuery.id = query.id
+        self.assertEqual(query, receivedQuery)
+        self.assertEqual(receivedResponse, response)
+
+        # remove all types
+        r = requests.delete(url + '?pool=&name=cache-api.cache.tests.powerdns.com.', headers=headers, timeout=self._webTimeout)
+        self.assertTrue(r)
+        self.assertEqual(r.status_code, 200)
+        content = r.json()
+        self.assertIn('count', content)
+        self.assertEqual(int(content['count']), 1)
+
+        # should be a miss
+        (receivedQuery, receivedResponse) = self.sendUDPQuery(query, response)
+        self.assertTrue(receivedQuery)
+        self.assertTrue(receivedResponse)
+        receivedQuery.id = query.id
+        self.assertEqual(query, receivedQuery)
+        self.assertEqual(receivedResponse, response)
+
+        # suffix removal
+        r = requests.delete(url + '?pool=&name=cache.tests.powerdns.com.&suffix=true', headers=headers, timeout=self._webTimeout)
+        self.assertTrue(r)
+        self.assertEqual(r.status_code, 200)
+        content = r.json()
+        self.assertIn('count', content)
+        self.assertEqual(int(content['count']), 1)
+
+        # should be a miss
+        (receivedQuery, receivedResponse) = self.sendUDPQuery(query, response)
+        self.assertTrue(receivedQuery)
+        self.assertTrue(receivedResponse)
+        receivedQuery.id = query.id
+        self.assertEqual(query, receivedQuery)
+        self.assertEqual(receivedResponse, response)
+
+class TestCachingOfVeryLargeAnswers(DNSDistTest):
+
+    _config_template = """
+    pc = newPacketCache(100, {maxTTL=86400, minTTL=1, maximumEntrySize=8192})
+    getPool(""):setCache(pc)
+    newServer{address="127.0.0.1:%d"}
+    """
+
+    def testVeryLargeAnswer(self):
+        """
+        Cache: Check that we can cache (and retrieve) VERY large answers
+
+        We should be able to get answers as large as 8192 bytes this time
+        """
+        numberOfQueries = 10
+        name = 'very-large-answer.cache.tests.powerdns.com.'
+        query = dns.message.make_query(name, 'TXT', 'IN')
+        response = dns.message.make_response(query)
+        # we prepare a large answer
+        content = ''
+        for i in range(31):
+            if len(content) > 0:
+                content = content + ' '
+            content = content + 'A' * 255
+        # pad up to 8192
+        content = content + ' ' + 'B' * 183
+
+        rrset = dns.rrset.from_text(name,
+                                    3600,
+                                    dns.rdataclass.IN,
+                                    dns.rdatatype.TXT,
+                                    content)
+        response.answer.append(rrset)
+        self.assertEqual(len(response.to_wire()), 8192)
+
+        # # first query to fill the cache, over TCP
+        (receivedQuery, receivedResponse) = self.sendTCPQuery(query, response)
+        self.assertTrue(receivedQuery)
+        self.assertTrue(receivedResponse)
+        receivedQuery.id = query.id
+        self.assertEqual(query, receivedQuery)
+        self.assertEqual(receivedResponse, response)
+
+        for _ in range(numberOfQueries):
+            (_, receivedResponse) = self.sendTCPQuery(query, response=None, useQueue=False)
+            self.assertEqual(receivedResponse, response)
+
+        total = 0
+        for key in self._responsesCounter:
+            total += self._responsesCounter[key]
+            TestCachingOfVeryLargeAnswers._responsesCounter[key] = 0
+
+        self.assertEqual(total, 1)
+
+        # UDP should not be cached, dnsdist has a hard limit to 4096 bytes for UDP
+        # actually we will never get an answer, because dnsdist will not be able to get it from the backend
+        (receivedQuery, receivedResponse) = self.sendUDPQuery(query, response)
+        self.assertTrue(receivedQuery)
+        self.assertFalse(receivedResponse)
+        receivedQuery.id = query.id
+        self.assertEqual(query, receivedQuery)

@@ -20,19 +20,35 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
+#include "dnsdist-async.hh"
+#include "dnsdist-dnsparser.hh"
+#include "dnsdist-dynblocks.hh"
+#include "dnsdist-ecs.hh"
 #include "dnsdist-lua-ffi.hh"
+#include "dnsdist-mac-address.hh"
+#include "dnsdist-metrics.hh"
+#include "dnsdist-lua-network.hh"
 #include "dnsdist-lua.hh"
 #include "dnsdist-ecs.hh"
+#include "dnsdist-rings.hh"
 #include "dolog.hh"
 
 uint16_t dnsdist_ffi_dnsquestion_get_qtype(const dnsdist_ffi_dnsquestion_t* dq)
 {
-  return dq->dq->qtype;
+  return dq->dq->ids.qtype;
 }
 
 uint16_t dnsdist_ffi_dnsquestion_get_qclass(const dnsdist_ffi_dnsquestion_t* dq)
 {
-  return dq->dq->qclass;
+  return dq->dq->ids.qclass;
+}
+
+uint16_t dnsdist_ffi_dnsquestion_get_id(const dnsdist_ffi_dnsquestion_t* dq)
+{
+  if (dq == nullptr) {
+    return 0;
+  }
+  return ntohs(dq->dq->getHeader()->id);
 }
 
 static void dnsdist_ffi_comboaddress_to_raw(const ComboAddress& ca, const void** addr, size_t* addrSize)
@@ -49,12 +65,21 @@ static void dnsdist_ffi_comboaddress_to_raw(const ComboAddress& ca, const void**
 
 void dnsdist_ffi_dnsquestion_get_localaddr(const dnsdist_ffi_dnsquestion_t* dq, const void** addr, size_t* addrSize)
 {
-  dnsdist_ffi_comboaddress_to_raw(*dq->dq->local, addr, addrSize);
+  dnsdist_ffi_comboaddress_to_raw(dq->dq->ids.origDest, addr, addrSize);
+}
+
+bool dnsdist_ffi_dnsquestion_is_remote_v6(const dnsdist_ffi_dnsquestion_t* dnsQuestion)
+{
+  if (dnsQuestion == nullptr || dnsQuestion->dq == nullptr) {
+    return false;
+  }
+
+  return dnsQuestion->dq->ids.origRemote.isIPv6();
 }
 
 void dnsdist_ffi_dnsquestion_get_remoteaddr(const dnsdist_ffi_dnsquestion_t* dq, const void** addr, size_t* addrSize)
 {
-  dnsdist_ffi_comboaddress_to_raw(*dq->dq->remote, addr, addrSize);
+  dnsdist_ffi_comboaddress_to_raw(dq->dq->ids.origRemote, addr, addrSize);
 }
 
 size_t dnsdist_ffi_dnsquestion_get_mac_addr(const dnsdist_ffi_dnsquestion_t* dq, void* buffer, size_t bufferSize)
@@ -62,8 +87,7 @@ size_t dnsdist_ffi_dnsquestion_get_mac_addr(const dnsdist_ffi_dnsquestion_t* dq,
   if (dq == nullptr) {
     return 0;
   }
-
-  auto ret = getMACAddress(*dq->dq->remote, reinterpret_cast<char*>(buffer), bufferSize);
+  auto ret = dnsdist::MacAddressesCache::get(dq->dq->ids.origRemote, reinterpret_cast<unsigned char*>(buffer), bufferSize);
   if (ret != 0) {
     return 0;
   }
@@ -71,32 +95,41 @@ size_t dnsdist_ffi_dnsquestion_get_mac_addr(const dnsdist_ffi_dnsquestion_t* dq,
   return 6;
 }
 
+uint64_t dnsdist_ffi_dnsquestion_get_elapsed_us(const dnsdist_ffi_dnsquestion_t* dq)
+{
+  if (dq == nullptr) {
+    return 0;
+  }
+
+  return static_cast<uint64_t>(std::round(dq->dq->ids.queryRealTime.udiff()));
+}
+
 void dnsdist_ffi_dnsquestion_get_masked_remoteaddr(dnsdist_ffi_dnsquestion_t* dq, const void** addr, size_t* addrSize, uint8_t bits)
 {
-  dq->maskedRemote = Netmask(*dq->dq->remote, bits).getMaskedNetwork();
+  dq->maskedRemote = Netmask(dq->dq->ids.origRemote, bits).getMaskedNetwork();
   dnsdist_ffi_comboaddress_to_raw(dq->maskedRemote, addr, addrSize);
 }
 
 uint16_t dnsdist_ffi_dnsquestion_get_local_port(const dnsdist_ffi_dnsquestion_t* dq)
 {
-  return dq->dq->local->getPort();
+  return dq->dq->ids.origDest.getPort();
 }
 
 uint16_t dnsdist_ffi_dnsquestion_get_remote_port(const dnsdist_ffi_dnsquestion_t* dq)
 {
-  return dq->dq->remote->getPort();
+  return dq->dq->ids.origRemote.getPort();
 }
 
 void dnsdist_ffi_dnsquestion_get_qname_raw(const dnsdist_ffi_dnsquestion_t* dq, const char** qname, size_t* qnameSize)
 {
-  const auto& storage = dq->dq->qname->getStorage();
+  const auto& storage = dq->dq->ids.qname.getStorage();
   *qname = storage.data();
   *qnameSize = storage.size();
 }
 
 size_t dnsdist_ffi_dnsquestion_get_qname_hash(const dnsdist_ffi_dnsquestion_t* dq, size_t init)
 {
-  return dq->dq->qname->hash(init);
+  return dq->dq->ids.qname.hash(init);
 }
 
 int dnsdist_ffi_dnsquestion_get_rcode(const dnsdist_ffi_dnsquestion_t* dq)
@@ -106,7 +139,7 @@ int dnsdist_ffi_dnsquestion_get_rcode(const dnsdist_ffi_dnsquestion_t* dq)
 
 void* dnsdist_ffi_dnsquestion_get_header(const dnsdist_ffi_dnsquestion_t* dq)
 {
-  return dq->dq->getHeader();
+  return dq->dq->getMutableHeader();
 }
 
 uint16_t dnsdist_ffi_dnsquestion_get_len(const dnsdist_ffi_dnsquestion_t* dq)
@@ -168,7 +201,7 @@ dnsdist_ffi_protocol_type dnsdist_ffi_dnsquestion_get_protocol(const dnsdist_ffi
 
 bool dnsdist_ffi_dnsquestion_get_skip_cache(const dnsdist_ffi_dnsquestion_t* dq)
 {
-  return dq->dq->skipCache;
+  return dq->dq->ids.skipCache;
 }
 
 bool dnsdist_ffi_dnsquestion_get_use_ecs(const dnsdist_ffi_dnsquestion_t* dq)
@@ -193,13 +226,13 @@ uint16_t dnsdist_ffi_dnsquestion_get_ecs_prefix_length(const dnsdist_ffi_dnsques
 
 bool dnsdist_ffi_dnsquestion_is_temp_failure_ttl_set(const dnsdist_ffi_dnsquestion_t* dq)
 {
-  return dq->dq->tempFailureTTL != boost::none;
+  return dq->dq->ids.tempFailureTTL != boost::none;
 }
 
 uint32_t dnsdist_ffi_dnsquestion_get_temp_failure_ttl(const dnsdist_ffi_dnsquestion_t* dq)
 {
-  if (dq->dq->tempFailureTTL) {
-    return *dq->dq->tempFailureTTL;
+  if (dq->dq->ids.tempFailureTTL) {
+    return *dq->dq->ids.tempFailureTTL;
   }
   return 0;
 }
@@ -219,9 +252,9 @@ const char* dnsdist_ffi_dnsquestion_get_tag(const dnsdist_ffi_dnsquestion_t* dq,
 {
   const char * result = nullptr;
 
-  if (dq->dq->qTag != nullptr) {
-    const auto it = dq->dq->qTag->find(label);
-    if (it != dq->dq->qTag->cend()) {
+  if (dq != nullptr && dq->dq != nullptr && dq->dq->ids.qTag != nullptr) {
+    const auto it = dq->dq->ids.qTag->find(label);
+    if (it != dq->dq->ids.qTag->cend()) {
       result = it->second.c_str();
     }
   }
@@ -229,14 +262,33 @@ const char* dnsdist_ffi_dnsquestion_get_tag(const dnsdist_ffi_dnsquestion_t* dq,
   return result;
 }
 
+size_t dnsdist_ffi_dnsquestion_get_tag_raw(const dnsdist_ffi_dnsquestion_t* dq, const char* label, char* buffer, size_t bufferSize)
+{
+  if (dq == nullptr || dq->dq == nullptr || dq->dq->ids.qTag == nullptr || label == nullptr || buffer == nullptr || bufferSize == 0) {
+    return 0;
+  }
+
+  const auto it = dq->dq->ids.qTag->find(label);
+  if (it == dq->dq->ids.qTag->cend()) {
+    return 0;
+  }
+
+  if (it->second.size() > bufferSize) {
+    return 0;
+  }
+
+  memcpy(buffer, it->second.c_str(), it->second.size());
+  return it->second.size();
+}
+
 const char* dnsdist_ffi_dnsquestion_get_http_path(dnsdist_ffi_dnsquestion_t* dq)
 {
   if (!dq->httpPath) {
-    if (dq->dq->du == nullptr) {
+    if (dq->dq->ids.du == nullptr) {
       return nullptr;
     }
 #ifdef HAVE_DNS_OVER_HTTPS
-    dq->httpPath = dq->dq->du->getHTTPPath();
+    dq->httpPath = dq->dq->ids.du->getHTTPPath();
 #endif /* HAVE_DNS_OVER_HTTPS */
   }
   if (dq->httpPath) {
@@ -248,11 +300,11 @@ const char* dnsdist_ffi_dnsquestion_get_http_path(dnsdist_ffi_dnsquestion_t* dq)
 const char* dnsdist_ffi_dnsquestion_get_http_query_string(dnsdist_ffi_dnsquestion_t* dq)
 {
   if (!dq->httpQueryString) {
-    if (dq->dq->du == nullptr) {
+    if (dq->dq->ids.du == nullptr) {
       return nullptr;
     }
 #ifdef HAVE_DNS_OVER_HTTPS
-    dq->httpQueryString = dq->dq->du->getHTTPQueryString();
+    dq->httpQueryString = dq->dq->ids.du->getHTTPQueryString();
 #endif /* HAVE_DNS_OVER_HTTPS */
   }
   if (dq->httpQueryString) {
@@ -264,11 +316,11 @@ const char* dnsdist_ffi_dnsquestion_get_http_query_string(dnsdist_ffi_dnsquestio
 const char* dnsdist_ffi_dnsquestion_get_http_host(dnsdist_ffi_dnsquestion_t* dq)
 {
   if (!dq->httpHost) {
-    if (dq->dq->du == nullptr) {
+    if (dq->dq->ids.du == nullptr) {
       return nullptr;
     }
 #ifdef HAVE_DNS_OVER_HTTPS
-    dq->httpHost = dq->dq->du->getHTTPHost();
+    dq->httpHost = dq->dq->ids.du->getHTTPHost();
 #endif /* HAVE_DNS_OVER_HTTPS */
   }
   if (dq->httpHost) {
@@ -280,11 +332,11 @@ const char* dnsdist_ffi_dnsquestion_get_http_host(dnsdist_ffi_dnsquestion_t* dq)
 const char* dnsdist_ffi_dnsquestion_get_http_scheme(dnsdist_ffi_dnsquestion_t* dq)
 {
   if (!dq->httpScheme) {
-    if (dq->dq->du == nullptr) {
+    if (dq->dq->ids.du == nullptr) {
       return nullptr;
     }
 #ifdef HAVE_DNS_OVER_HTTPS
-    dq->httpScheme = dq->dq->du->getHTTPScheme();
+    dq->httpScheme = dq->dq->ids.du->getHTTPScheme();
 #endif /* HAVE_DNS_OVER_HTTPS */
   }
   if (dq->httpScheme) {
@@ -319,19 +371,22 @@ size_t dnsdist_ffi_dnsquestion_get_edns_options(dnsdist_ffi_dnsquestion_t* dq, c
     totalCount += option.second.values.size();
   }
 
-  dq->ednsOptionsVect.clear();
-  dq->ednsOptionsVect.resize(totalCount);
+  if (!dq->ednsOptionsVect) {
+    dq->ednsOptionsVect = std::make_unique<std::vector<dnsdist_ffi_ednsoption_t>>();
+  }
+  dq->ednsOptionsVect->clear();
+  dq->ednsOptionsVect->resize(totalCount);
   size_t pos = 0;
   for (const auto& option : *dq->dq->ednsOptions) {
     for (const auto& entry : option.second.values) {
-      fill_edns_option(entry, dq->ednsOptionsVect.at(pos));
-      dq->ednsOptionsVect.at(pos).optionCode = option.first;
+      fill_edns_option(entry, dq->ednsOptionsVect->at(pos));
+      dq->ednsOptionsVect->at(pos).optionCode = option.first;
       pos++;
     }
   }
 
   if (totalCount > 0) {
-    *out = dq->ednsOptionsVect.data();
+    *out = dq->ednsOptionsVect->data();
   }
 
   return totalCount;
@@ -339,26 +394,33 @@ size_t dnsdist_ffi_dnsquestion_get_edns_options(dnsdist_ffi_dnsquestion_t* dq, c
 
 size_t dnsdist_ffi_dnsquestion_get_http_headers(dnsdist_ffi_dnsquestion_t* dq, const dnsdist_ffi_http_header_t** out)
 {
-  if (dq->dq->du == nullptr) {
+  if (dq->dq->ids.du == nullptr) {
     return 0;
   }
 
 #ifdef HAVE_DNS_OVER_HTTPS
-  dq->httpHeaders = dq->dq->du->getHTTPHeaders();
-  dq->httpHeadersVect.clear();
-  dq->httpHeadersVect.resize(dq->httpHeaders.size());
+  auto headers = dq->dq->ids.du->getHTTPHeaders();
+  if (headers.size() == 0) {
+    return 0;
+  }
+  dq->httpHeaders = std::make_unique<std::unordered_map<std::string, std::string>>(std::move(headers));
+  if (!dq->httpHeadersVect) {
+    dq->httpHeadersVect = std::make_unique<std::vector<dnsdist_ffi_http_header_t>>();
+  }
+  dq->httpHeadersVect->clear();
+  dq->httpHeadersVect->resize(dq->httpHeaders->size());
   size_t pos = 0;
-  for (const auto& header : dq->httpHeaders) {
-    dq->httpHeadersVect.at(pos).name = header.first.c_str();
-    dq->httpHeadersVect.at(pos).value = header.second.c_str();
+  for (const auto& header : *dq->httpHeaders) {
+    dq->httpHeadersVect->at(pos).name = header.first.c_str();
+    dq->httpHeadersVect->at(pos).value = header.second.c_str();
     ++pos;
   }
 
-  if (!dq->httpHeadersVect.empty()) {
-    *out = dq->httpHeadersVect.data();
+  if (!dq->httpHeadersVect->empty()) {
+    *out = dq->httpHeadersVect->data();
   }
 
-  return dq->httpHeadersVect.size();
+  return dq->httpHeadersVect->size();
 #else
   return 0;
 #endif
@@ -366,27 +428,30 @@ size_t dnsdist_ffi_dnsquestion_get_http_headers(dnsdist_ffi_dnsquestion_t* dq, c
 
 size_t dnsdist_ffi_dnsquestion_get_tag_array(dnsdist_ffi_dnsquestion_t* dq, const dnsdist_ffi_tag_t** out)
 {
-  if (dq->dq->qTag == nullptr || dq->dq->qTag->size() == 0) {
+  if (dq == nullptr || dq->dq == nullptr || dq->dq->ids.qTag == nullptr || dq->dq->ids.qTag->size() == 0) {
     return 0;
   }
 
-  dq->tagsVect.clear();
-  dq->tagsVect.resize(dq->dq->qTag->size());
+  if (!dq->tagsVect) {
+    dq->tagsVect = std::make_unique<std::vector<dnsdist_ffi_tag_t>>();
+  }
+  dq->tagsVect->clear();
+  dq->tagsVect->resize(dq->dq->ids.qTag->size());
   size_t pos = 0;
 
-  for (const auto& tag : *dq->dq->qTag) {
-    auto& entry = dq->tagsVect.at(pos);
+  for (const auto& tag : *dq->dq->ids.qTag) {
+    auto& entry = dq->tagsVect->at(pos);
     entry.name = tag.first.c_str();
     entry.value = tag.second.c_str();
     ++pos;
   }
 
 
-  if (!dq->tagsVect.empty()) {
-    *out = dq->tagsVect.data();
+  if (!dq->tagsVect->empty()) {
+    *out = dq->tagsVect->data();
   }
 
-  return dq->tagsVect.size();
+  return dq->tagsVect->size();
 }
 
 void dnsdist_ffi_dnsquestion_set_result(dnsdist_ffi_dnsquestion_t* dq, const char* str, size_t strSize)
@@ -396,21 +461,37 @@ void dnsdist_ffi_dnsquestion_set_result(dnsdist_ffi_dnsquestion_t* dq, const cha
 
 void dnsdist_ffi_dnsquestion_set_http_response(dnsdist_ffi_dnsquestion_t* dq, uint16_t statusCode, const char* body, size_t bodyLen, const char* contentType)
 {
-  if (dq->dq->du == nullptr) {
+  if (dq->dq->ids.du == nullptr) {
     return;
   }
 
 #ifdef HAVE_DNS_OVER_HTTPS
   PacketBuffer bodyVect(body, body + bodyLen);
-  dq->dq->du->setHTTPResponse(statusCode, std::move(bodyVect), contentType);
-  dq->dq->getHeader()->qr = true;
+  dq->dq->ids.du->setHTTPResponse(statusCode, std::move(bodyVect), contentType);
+  dnsdist::PacketMangling::editDNSHeaderFromPacket(dq->dq->getMutableData(), [](dnsheader& header) {
+    header.qr = true;
+    return true;
+  });
 #endif
+}
+
+void dnsdist_ffi_dnsquestion_set_extended_dns_error(dnsdist_ffi_dnsquestion_t* dnsQuestion, uint16_t infoCode, const char* extraText, size_t extraTextSize)
+{
+  EDNSExtendedError ede;
+  ede.infoCode = infoCode;
+  if (extraText != nullptr && extraTextSize > 0) {
+    ede.extraText = std::string(extraText, extraTextSize);
+  }
+  dnsQuestion->dq->ids.d_extendedError = std::make_unique<EDNSExtendedError>(ede);
 }
 
 void dnsdist_ffi_dnsquestion_set_rcode(dnsdist_ffi_dnsquestion_t* dq, int rcode)
 {
-  dq->dq->getHeader()->rcode = rcode;
-  dq->dq->getHeader()->qr = true;
+  dnsdist::PacketMangling::editDNSHeaderFromPacket(dq->dq->getMutableData(), [rcode](dnsheader& header) {
+    header.rcode = rcode;
+    header.qr = true;
+    return true;
+  });
 }
 
 void dnsdist_ffi_dnsquestion_set_len(dnsdist_ffi_dnsquestion_t* dq, uint16_t len)
@@ -420,7 +501,7 @@ void dnsdist_ffi_dnsquestion_set_len(dnsdist_ffi_dnsquestion_t* dq, uint16_t len
 
 void dnsdist_ffi_dnsquestion_set_skip_cache(dnsdist_ffi_dnsquestion_t* dq, bool skipCache)
 {
-  dq->dq->skipCache = skipCache;
+  dq->dq->ids.skipCache = skipCache;
 }
 
 void dnsdist_ffi_dnsquestion_set_use_ecs(dnsdist_ffi_dnsquestion_t* dq, bool useECS)
@@ -440,17 +521,55 @@ void dnsdist_ffi_dnsquestion_set_ecs_prefix_length(dnsdist_ffi_dnsquestion_t* dq
 
 void dnsdist_ffi_dnsquestion_set_temp_failure_ttl(dnsdist_ffi_dnsquestion_t* dq, uint32_t tempFailureTTL)
 {
-  dq->dq->tempFailureTTL = tempFailureTTL;
+  dq->dq->ids.tempFailureTTL = tempFailureTTL;
 }
 
 void dnsdist_ffi_dnsquestion_unset_temp_failure_ttl(dnsdist_ffi_dnsquestion_t* dq)
 {
-  dq->dq->tempFailureTTL = boost::none;
+  dq->dq->ids.tempFailureTTL = boost::none;
 }
 
 void dnsdist_ffi_dnsquestion_set_tag(dnsdist_ffi_dnsquestion_t* dq, const char* label, const char* value)
 {
   dq->dq->setTag(label, value);
+}
+
+void dnsdist_ffi_dnsquestion_set_tag_raw(dnsdist_ffi_dnsquestion_t* dq, const char* label, const char* value, size_t valueSize)
+{
+  dq->dq->setTag(label, std::string(value, valueSize));
+}
+
+void dnsdist_ffi_dnsquestion_set_requestor_id(dnsdist_ffi_dnsquestion_t* dq, const char* value, size_t valueSize)
+{
+  if (!dq || !dq->dq || !value) {
+    return;
+  }
+  if (!dq->dq->ids.d_protoBufData) {
+    dq->dq->ids.d_protoBufData = std::make_unique<InternalQueryState::ProtoBufData>();
+  }
+  dq->dq->ids.d_protoBufData->d_requestorID = std::string(value, valueSize);
+}
+
+void dnsdist_ffi_dnsquestion_set_device_id(dnsdist_ffi_dnsquestion_t* dq, const char* value, size_t valueSize)
+{
+  if (!dq || !dq->dq || !value) {
+    return;
+  }
+  if (!dq->dq->ids.d_protoBufData) {
+    dq->dq->ids.d_protoBufData = std::make_unique<InternalQueryState::ProtoBufData>();
+  }
+  dq->dq->ids.d_protoBufData->d_deviceID = std::string(value, valueSize);
+}
+
+void dnsdist_ffi_dnsquestion_set_device_name(dnsdist_ffi_dnsquestion_t* dq, const char* value, size_t valueSize)
+{
+  if (!dq || !dq->dq || !value) {
+    return;
+  }
+  if (!dq->dq->ids.d_protoBufData) {
+    dq->dq->ids.d_protoBufData = std::make_unique<InternalQueryState::ProtoBufData>();
+  }
+  dq->dq->ids.d_protoBufData->d_deviceName = std::string(value, valueSize);
 }
 
 size_t dnsdist_ffi_dnsquestion_get_trailing_data(dnsdist_ffi_dnsquestion_t* dq, const char** out)
@@ -478,8 +597,8 @@ void dnsdist_ffi_dnsquestion_send_trap(dnsdist_ffi_dnsquestion_t* dq, const char
 void dnsdist_ffi_dnsquestion_spoof_packet(dnsdist_ffi_dnsquestion_t* dq, const char* raw, size_t len)
 {
   std::string result;
-  SpoofAction sa(raw, len);
-  sa(dq->dq, &result);
+  SpoofAction tempSpoofAction(raw, len);
+  tempSpoofAction(dq->dq, &result);
 }
 
 void dnsdist_ffi_dnsquestion_spoof_raw(dnsdist_ffi_dnsquestion_t* dq, const dnsdist_ffi_raw_value_t* values, size_t valuesCount)
@@ -492,8 +611,8 @@ void dnsdist_ffi_dnsquestion_spoof_raw(dnsdist_ffi_dnsquestion_t* dq, const dnsd
   }
 
   std::string result;
-  SpoofAction sa(data);
-  sa(dq->dq, &result);
+  SpoofAction tempSpoofAction(data, std::nullopt);
+  tempSpoofAction(dq->dq, &result);
 }
 
 void dnsdist_ffi_dnsquestion_spoof_addrs(dnsdist_ffi_dnsquestion_t* dq, const dnsdist_ffi_raw_value_t* values, size_t valuesCount)
@@ -521,8 +640,25 @@ void dnsdist_ffi_dnsquestion_spoof_addrs(dnsdist_ffi_dnsquestion_t* dq, const dn
   }
 
   std::string result;
-  SpoofAction sa(data);
-  sa(dq->dq, &result);
+  SpoofAction tempSpoofAction(data);
+  tempSpoofAction(dq->dq, &result);
+}
+
+void dnsdist_ffi_dnsquestion_set_max_returned_ttl(dnsdist_ffi_dnsquestion_t* dq, uint32_t max)
+{
+  if (dq != nullptr && dq->dq != nullptr) {
+    dq->dq->ids.ttlCap = max;
+  }
+}
+
+bool dnsdist_ffi_dnsquestion_set_restartable(dnsdist_ffi_dnsquestion_t* dq)
+{
+  if (dq == nullptr || dq->dq == nullptr) {
+    return false;
+  }
+
+  dq->dq->ids.d_packet = std::make_unique<PacketBuffer>(dq->dq->getData());
+  return true;
 }
 
 size_t dnsdist_ffi_servers_list_get_count(const dnsdist_ffi_servers_list_t* list)
@@ -574,7 +710,7 @@ int dnsdist_ffi_server_get_order(const dnsdist_ffi_server_t* server)
 
 double dnsdist_ffi_server_get_latency(const dnsdist_ffi_server_t* server)
 {
-  return server->server->latencyUsec;
+  return server->server->getRelevantLatencyUsec();
 }
 
 bool dnsdist_ffi_server_is_up(const dnsdist_ffi_server_t* server)
@@ -604,18 +740,254 @@ void dnsdist_ffi_dnsresponse_set_max_ttl(dnsdist_ffi_dnsresponse_t* dr, uint32_t
 
 void dnsdist_ffi_dnsresponse_limit_ttl(dnsdist_ffi_dnsresponse_t* dr, uint32_t min, uint32_t max)
 {
-  if (dr->dr != nullptr) {
+  if (dr != nullptr && dr->dr != nullptr) {
     std::string result;
     LimitTTLResponseAction ac(min, max);
     ac(dr->dr, &result);
   }
 }
 
+void dnsdist_ffi_dnsresponse_set_max_returned_ttl(dnsdist_ffi_dnsresponse_t* dr, uint32_t max)
+{
+  if (dr != nullptr && dr->dr != nullptr) {
+    dr->dr->ids.ttlCap = max;
+  }
+}
+
 void dnsdist_ffi_dnsresponse_clear_records_type(dnsdist_ffi_dnsresponse_t* dr, uint16_t qtype)
 {
-  if (dr->dr != nullptr) {
-    clearDNSPacketRecordTypes(dr->dr->getMutableData(), std::set<QType>{qtype});
+  if (dr != nullptr && dr->dr != nullptr) {
+    clearDNSPacketRecordTypes(dr->dr->getMutableData(), std::unordered_set<QType>{qtype});
   }
+}
+
+bool dnsdist_ffi_dnsresponse_rebase(dnsdist_ffi_dnsresponse_t* dr, const char* initialName, size_t initialNameSize)
+{
+  if (dr == nullptr || dr->dr == nullptr || initialName == nullptr || initialNameSize == 0) {
+    return false;
+  }
+
+  try {
+    DNSName parsed(initialName, initialNameSize, 0, false);
+
+    if (!dnsdist::changeNameInDNSPacket(dr->dr->getMutableData(), dr->dr->ids.qname, parsed)) {
+      return false;
+    }
+
+    // set qname to new one
+    dr->dr->ids.qname = std::move(parsed);
+    dr->dr->ids.skipCache = true;
+  }
+  catch (const std::exception& e) {
+    vinfolog("Error rebasing packet on a new DNSName: %s", e.what());
+    return false;
+  }
+
+  return true;
+}
+
+bool dnsdist_ffi_dnsquestion_set_async(dnsdist_ffi_dnsquestion_t* dq, uint16_t asyncID, uint16_t queryID, uint32_t timeoutMs)
+{
+  try {
+    dq->dq->asynchronous = true;
+    return dnsdist::suspendQuery(*dq->dq, asyncID, queryID, timeoutMs);
+  }
+  catch (const std::exception& e) {
+    vinfolog("Error in dnsdist_ffi_dnsquestion_set_async: %s", e.what());
+  }
+  catch (...) {
+    vinfolog("Exception in dnsdist_ffi_dnsquestion_set_async");
+  }
+
+  return false;
+}
+
+bool dnsdist_ffi_dnsresponse_set_async(dnsdist_ffi_dnsquestion_t* dq, uint16_t asyncID, uint16_t queryID, uint32_t timeoutMs)
+{
+  try {
+    dq->dq->asynchronous = true;
+    auto dr = dynamic_cast<DNSResponse*>(dq->dq);
+    if (!dr) {
+      vinfolog("Passed a DNSQuestion instead of a DNSResponse to dnsdist_ffi_dnsresponse_set_async");
+      return false;
+    }
+
+    return dnsdist::suspendResponse(*dr, asyncID, queryID, timeoutMs);
+  }
+  catch (const std::exception& e) {
+    vinfolog("Error in dnsdist_ffi_dnsresponse_set_async: %s", e.what());
+  }
+  catch (...) {
+    vinfolog("Exception in dnsdist_ffi_dnsresponse_set_async");
+  }
+  return false;
+}
+
+bool dnsdist_ffi_resume_from_async(uint16_t asyncID, uint16_t queryID, const char* tag, size_t tagSize, const char* tagValue, size_t tagValueSize, bool useCache)
+{
+  if (!dnsdist::g_asyncHolder) {
+    vinfolog("Unable to resume, no asynchronous holder");
+    return false;
+  }
+
+  auto query = dnsdist::g_asyncHolder->get(asyncID, queryID);
+  if (!query) {
+    vinfolog("Unable to resume, no object found for asynchronous ID %d and query ID %d", asyncID, queryID);
+    return false;
+  }
+
+  auto& ids = query->query.d_idstate;
+  if (tag != nullptr && tagSize > 0) {
+    if (!ids.qTag) {
+      ids.qTag = std::make_unique<QTag>();
+    }
+    (*ids.qTag)[std::string(tag, tagSize)] = std::string(tagValue, tagValueSize);
+  }
+
+  ids.skipCache = !useCache;
+
+  return dnsdist::queueQueryResumptionEvent(std::move(query));
+}
+
+bool dnsdist_ffi_set_rcode_from_async(uint16_t asyncID, uint16_t queryID, uint8_t rcode, bool clearAnswers)
+{
+  if (!dnsdist::g_asyncHolder) {
+    return false;
+  }
+
+  auto query = dnsdist::g_asyncHolder->get(asyncID, queryID);
+  if (!query) {
+    vinfolog("Unable to resume with a custom response code, no object found for asynchronous ID %d and query ID %d", asyncID, queryID);
+    return false;
+  }
+
+  if (!dnsdist::setInternalQueryRCode(query->query.d_idstate, query->query.d_buffer, rcode, clearAnswers)) {
+    return false;
+  }
+
+  query->query.d_idstate.skipCache = true;
+
+  return dnsdist::queueQueryResumptionEvent(std::move(query));
+}
+
+bool dnsdist_ffi_resume_from_async_with_alternate_name(uint16_t asyncID, uint16_t queryID, const char* alternateName, size_t alternateNameSize, const char* tag, size_t tagSize, const char* tagValue, size_t tagValueSize, const char* formerNameTagName, size_t formerNameTagSize)
+{
+  if (!dnsdist::g_asyncHolder) {
+    return false;
+  }
+
+  auto query = dnsdist::g_asyncHolder->get(asyncID, queryID);
+  if (!query) {
+    vinfolog("Unable to resume with an alternate name, no object found for asynchronous ID %d and query ID %d", asyncID, queryID);
+    return false;
+  }
+
+  auto& ids = query->query.d_idstate;
+  DNSName originalName = ids.qname;
+
+  try {
+    DNSName parsed(alternateName, alternateNameSize, 0, false);
+
+    PacketBuffer initialPacket;
+    if (query->d_isResponse) {
+      if (!ids.d_packet) {
+        return false;
+      }
+      initialPacket = std::move(*ids.d_packet);
+    }
+    else {
+      initialPacket = std::move(query->query.d_buffer);
+    }
+
+    // edit qname in query packet
+    if (!dnsdist::changeNameInDNSPacket(initialPacket, originalName, parsed)) {
+      return false;
+    }
+    if (query->d_isResponse) {
+      query->d_isResponse = false;
+    }
+    query->query.d_buffer = std::move(initialPacket);
+    // set qname to new one
+    ids.qname = std::move(parsed);
+  }
+  catch (const std::exception& e) {
+    vinfolog("Error rebasing packet on a new DNSName: %s", e.what());
+    return false;
+  }
+
+  // save existing qname in tag
+  if (formerNameTagName != nullptr && formerNameTagSize > 0) {
+    if (!ids.qTag) {
+      ids.qTag = std::make_unique<QTag>();
+    }
+    (*ids.qTag)[std::string(formerNameTagName, formerNameTagSize)] = originalName.getStorage();
+  }
+
+  if (tag != nullptr && tagSize > 0) {
+    if (!ids.qTag) {
+      ids.qTag = std::make_unique<QTag>();
+    }
+    (*ids.qTag)[std::string(tag, tagSize)] = std::string(tagValue, tagValueSize);
+  }
+
+  ids.skipCache = true;
+
+  // resume as query
+  return dnsdist::queueQueryResumptionEvent(std::move(query));
+}
+
+bool dnsdist_ffi_drop_from_async(uint16_t asyncID, uint16_t queryID)
+{
+  if (!dnsdist::g_asyncHolder) {
+    return false;
+  }
+
+  auto query = dnsdist::g_asyncHolder->get(asyncID, queryID);
+  if (!query) {
+    vinfolog("Unable to drop, no object found for asynchronous ID %d and query ID %d", asyncID, queryID);
+    return false;
+  }
+
+  auto sender = query->getTCPQuerySender();
+  if (!sender) {
+    return false;
+  }
+
+  struct timeval now;
+  gettimeofday(&now, nullptr);
+  TCPResponse tresponse(std::move(query->query));
+  sender->notifyIOError(now, std::move(tresponse));
+
+  return true;
+}
+
+bool dnsdist_ffi_set_answer_from_async(uint16_t asyncID, uint16_t queryID, const char* raw, size_t rawSize)
+{
+  if (rawSize < sizeof(dnsheader)) {
+    return false;
+  }
+  if (!dnsdist::g_asyncHolder) {
+    return false;
+  }
+
+  auto query = dnsdist::g_asyncHolder->get(asyncID, queryID);
+  if (!query) {
+    vinfolog("Unable to resume with a custom answer, no object found for asynchronous ID %d and query ID %d", asyncID, queryID);
+    return false;
+  }
+
+  dnsheader_aligned alignedHeader(query->query.d_buffer.data());
+  auto oldID = alignedHeader->id;
+  query->query.d_buffer.clear();
+  query->query.d_buffer.insert(query->query.d_buffer.begin(), raw, raw + rawSize);
+
+  dnsdist::PacketMangling::editDNSHeaderFromPacket(query->query.d_buffer, [oldID](dnsheader& header) {
+    header.id = oldID;
+    return true;
+  });
+  query->query.d_idstate.skipCache = true;
+
+  return dnsdist::queueQueryResumptionEvent(std::move(query));
 }
 
 static constexpr char s_lua_ffi_code[] = R"FFICodeContent(
@@ -637,7 +1009,7 @@ const char* getLuaFFIWrappers()
 
 void setupLuaLoadBalancingContext(LuaContext& luaCtx)
 {
-  setupLuaBindings(luaCtx, true);
+  setupLuaBindings(luaCtx, true, false);
   setupLuaBindingsDNSQuestion(luaCtx);
   setupLuaBindingsKVS(luaCtx, true);
   setupLuaVars(luaCtx);
@@ -706,7 +1078,7 @@ size_t dnsdist_ffi_dnsquestion_generate_proxy_protocol_payload(const dnsdist_ffi
     }
   }
 
-  std::string payload = makeProxyHeader(dq->dq->overTCP(), *dq->dq->remote, *dq->dq->local, valuesVect);
+  std::string payload = makeProxyHeader(dq->dq->overTCP(), dq->dq->ids.origRemote, dq->dq->ids.origDest, valuesVect);
   if (payload.size() > outSize) {
     return 0;
   }
@@ -714,4 +1086,933 @@ size_t dnsdist_ffi_dnsquestion_generate_proxy_protocol_payload(const dnsdist_ffi
   memcpy(out, payload.c_str(), payload.size());
 
   return payload.size();
+}
+
+struct dnsdist_ffi_domain_list_t
+{
+  std::vector<std::string> d_domains;
+};
+struct dnsdist_ffi_address_list_t {
+  std::vector<std::string> d_addresses;
+};
+
+const char* dnsdist_ffi_domain_list_get(const dnsdist_ffi_domain_list_t* list, size_t idx)
+{
+  if (list == nullptr || idx >= list->d_domains.size()) {
+    return nullptr;
+  }
+
+  return list->d_domains.at(idx).c_str();
+}
+
+void dnsdist_ffi_domain_list_free(dnsdist_ffi_domain_list_t* list)
+{
+  delete list;
+}
+
+const char* dnsdist_ffi_address_list_get(const dnsdist_ffi_address_list_t* list, size_t idx)
+{
+  if (list == nullptr || idx >= list->d_addresses.size()) {
+    return nullptr;
+  }
+
+  return list->d_addresses.at(idx).c_str();
+}
+
+void dnsdist_ffi_address_list_free(dnsdist_ffi_address_list_t* list)
+{
+  delete list;
+}
+
+size_t dnsdist_ffi_packetcache_get_domain_list_by_addr(const char* poolName, const char* addr, dnsdist_ffi_domain_list_t** out)
+{
+  if (poolName == nullptr || addr == nullptr || out == nullptr) {
+    return 0;
+  }
+
+  ComboAddress ca;
+  try {
+    ca = ComboAddress(addr);
+  }
+  catch (const std::exception& e) {
+    vinfolog("Error parsing address passed to dnsdist_ffi_packetcache_get_domain_list_by_addr: %s", e.what());
+    return 0;
+  }
+  catch (const PDNSException& e) {
+    vinfolog("Error parsing address passed to dnsdist_ffi_packetcache_get_domain_list_by_addr: %s", e.reason);
+    return 0;
+  }
+
+  const auto localPools = g_pools.getCopy();
+  auto it = localPools.find(poolName);
+  if (it == localPools.end()) {
+    return 0;
+  }
+
+  auto pool = it->second;
+  if (!pool->packetCache) {
+    return 0;
+  }
+
+  auto domains = pool->packetCache->getDomainsContainingRecords(ca);
+  if (domains.size() == 0) {
+    return 0;
+  }
+
+  auto list = std::make_unique<dnsdist_ffi_domain_list_t>();
+  list->d_domains.reserve(domains.size());
+  for (const auto& domain : domains) {
+    try {
+      list->d_domains.push_back(domain.toString());
+    }
+    catch (const std::exception& e) {
+      vinfolog("Error converting domain to string in dnsdist_ffi_packetcache_get_domain_list_by_addr: %s", e.what());
+    }
+  }
+
+  size_t count = list->d_domains.size();
+  if (count > 0) {
+    *out = list.release();
+  }
+  return count;
+}
+
+size_t dnsdist_ffi_packetcache_get_address_list_by_domain(const char* poolName, const char* domain, dnsdist_ffi_address_list_t** out)
+{
+  if (poolName == nullptr || domain == nullptr || out == nullptr) {
+    return 0;
+  }
+
+  DNSName name;
+  try {
+    name = DNSName(domain);
+  }
+  catch (const std::exception& e) {
+    vinfolog("Error parsing domain passed to dnsdist_ffi_packetcache_get_address_list_by_domain: %s", e.what());
+    return 0;
+  }
+
+  const auto localPools = g_pools.getCopy();
+  auto it = localPools.find(poolName);
+  if (it == localPools.end()) {
+    return 0;
+  }
+
+  auto pool = it->second;
+  if (!pool->packetCache) {
+    return 0;
+  }
+
+  auto addresses = pool->packetCache->getRecordsForDomain(name);
+  if (addresses.size() == 0) {
+    return 0;
+  }
+
+  auto list = std::make_unique<dnsdist_ffi_address_list_t>();
+  list->d_addresses.reserve(addresses.size());
+  for (const auto& addr : addresses) {
+    try {
+      list->d_addresses.push_back(addr.toString());
+    }
+    catch (const std::exception& e) {
+      vinfolog("Error converting address to string in dnsdist_ffi_packetcache_get_address_list_by_domain: %s", e.what());
+    }
+  }
+
+  size_t count = list->d_addresses.size();
+  if (count > 0) {
+    *out = list.release();
+  }
+  return count;
+}
+
+struct dnsdist_ffi_ring_entry_list_t
+{
+  struct entry
+  {
+    std::string qname;
+    std::string requestor;
+    std::string macAddr;
+    std::string ds;
+    dnsheader dh;
+    double age;
+    unsigned int latency;
+    uint16_t size;
+    uint16_t qtype;
+    dnsdist::Protocol protocol;
+    bool isResponse;
+  };
+
+  std::vector<entry> d_entries;
+};
+
+bool dnsdist_ffi_ring_entry_is_response(const dnsdist_ffi_ring_entry_list_t* list, size_t idx)
+{
+  if (list == nullptr || idx >= list->d_entries.size()) {
+    return false;
+  }
+
+  return list->d_entries.at(idx).isResponse;
+}
+
+double dnsdist_ffi_ring_entry_get_age(const dnsdist_ffi_ring_entry_list_t* list, size_t idx)
+{
+  if (list == nullptr || idx >= list->d_entries.size()) {
+    return 0;
+  }
+
+  return list->d_entries.at(idx).age;
+}
+
+const char* dnsdist_ffi_ring_entry_get_name(const dnsdist_ffi_ring_entry_list_t* list, size_t idx)
+{
+  if (list == nullptr || idx >= list->d_entries.size()) {
+    return nullptr;
+  }
+
+  return list->d_entries.at(idx).qname.c_str();
+}
+
+uint16_t dnsdist_ffi_ring_entry_get_type(const dnsdist_ffi_ring_entry_list_t* list, size_t idx)
+{
+  if (list == nullptr || idx >= list->d_entries.size()) {
+    return 0;
+  }
+
+  return list->d_entries.at(idx).qtype;
+}
+
+const char* dnsdist_ffi_ring_entry_get_requestor(const dnsdist_ffi_ring_entry_list_t* list, size_t idx)
+{
+  if (list == nullptr || idx >= list->d_entries.size()) {
+    return nullptr;
+  }
+
+  return list->d_entries.at(idx).requestor.c_str();
+}
+
+const char* dnsdist_ffi_ring_entry_get_backend(const dnsdist_ffi_ring_entry_list_t* list, size_t idx)
+{
+  if (list == nullptr || idx >= list->d_entries.size()) {
+    return nullptr;
+  }
+
+  return list->d_entries.at(idx).ds.c_str();
+}
+
+uint8_t dnsdist_ffi_ring_entry_get_protocol(const dnsdist_ffi_ring_entry_list_t* list, size_t idx)
+{
+  if (list == nullptr || idx >= list->d_entries.size()) {
+    return 0;
+  }
+
+  return list->d_entries.at(idx).protocol.toNumber();
+}
+
+uint16_t dnsdist_ffi_ring_entry_get_size(const dnsdist_ffi_ring_entry_list_t* list, size_t idx)
+{
+  if (list == nullptr || idx >= list->d_entries.size()) {
+    return 0;
+  }
+
+  return list->d_entries.at(idx).size;
+}
+
+uint16_t dnsdist_ffi_ring_entry_get_latency(const dnsdist_ffi_ring_entry_list_t* list, size_t idx)
+{
+  if (list == nullptr || idx >= list->d_entries.size()) {
+    return 0;
+  }
+
+  return list->d_entries.at(idx).latency;
+}
+
+uint16_t dnsdist_ffi_ring_entry_get_id(const dnsdist_ffi_ring_entry_list_t* list, size_t idx)
+{
+  if (list == nullptr || idx >= list->d_entries.size()) {
+    return 0;
+  }
+
+  return ntohs(list->d_entries.at(idx).dh.id);
+}
+
+uint8_t dnsdist_ffi_ring_entry_get_rcode(const dnsdist_ffi_ring_entry_list_t* list, size_t idx)
+{
+  if (list == nullptr || idx >= list->d_entries.size()) {
+    return 0;
+  }
+
+  return list->d_entries.at(idx).dh.rcode;
+}
+
+bool dnsdist_ffi_ring_entry_get_aa(const dnsdist_ffi_ring_entry_list_t* list, size_t idx)
+{
+  if (list == nullptr || idx >= list->d_entries.size()) {
+    return false;
+  }
+
+  return list->d_entries.at(idx).dh.aa == 1;
+}
+
+bool dnsdist_ffi_ring_entry_get_rd(const dnsdist_ffi_ring_entry_list_t* list, size_t idx)
+{
+  if (list == nullptr || idx >= list->d_entries.size()) {
+    return false;
+  }
+
+  return list->d_entries.at(idx).dh.rd == 1;
+}
+
+bool dnsdist_ffi_ring_entry_get_tc(const dnsdist_ffi_ring_entry_list_t* list, size_t idx)
+{
+  if (list == nullptr || idx >= list->d_entries.size()) {
+    return false;
+  }
+
+  return list->d_entries.at(idx).dh.tc == 1;
+}
+
+uint16_t dnsdist_ffi_ring_entry_get_ancount(const dnsdist_ffi_ring_entry_list_t* list, size_t idx)
+{
+  if (list == nullptr || idx >= list->d_entries.size()) {
+    return 0;
+  }
+
+  return ntohs(list->d_entries.at(idx).dh.ancount);
+}
+
+uint16_t dnsdist_ffi_ring_entry_get_nscount(const dnsdist_ffi_ring_entry_list_t* list, size_t idx)
+{
+  if (list == nullptr || idx >= list->d_entries.size()) {
+    return 0;
+  }
+
+  return ntohs(list->d_entries.at(idx).dh.nscount);
+}
+
+uint16_t dnsdist_ffi_ring_entry_get_arcount(const dnsdist_ffi_ring_entry_list_t* list, size_t idx)
+{
+  if (list == nullptr || idx >= list->d_entries.size()) {
+    return 0;
+  }
+
+  return ntohs(list->d_entries.at(idx).dh.arcount);
+}
+
+bool dnsdist_ffi_ring_entry_has_mac_address(const dnsdist_ffi_ring_entry_list_t* list, size_t idx)
+{
+  if (list == nullptr || idx >= list->d_entries.size()) {
+    return false;
+  }
+
+  return !list->d_entries.at(idx).macAddr.empty();
+}
+
+const char* dnsdist_ffi_ring_entry_get_mac_address(const dnsdist_ffi_ring_entry_list_t* list, size_t idx)
+{
+  if (list == nullptr || idx >= list->d_entries.size()) {
+    return nullptr;
+  }
+
+  return list->d_entries.at(idx).macAddr.data();
+}
+
+void dnsdist_ffi_ring_entry_list_free(dnsdist_ffi_ring_entry_list_t* list)
+{
+  delete list;
+}
+
+template<typename T> static void addRingEntryToList(std::unique_ptr<dnsdist_ffi_ring_entry_list_t>& list, const struct timespec& now, const T& entry)
+{
+  auto age = DiffTime(entry.when, now);
+
+  constexpr bool response = std::is_same_v<T, Rings::Response>;
+  if constexpr (!response) {
+#if defined(DNSDIST_RINGS_WITH_MACADDRESS)
+    dnsdist_ffi_ring_entry_list_t::entry tmp{entry.name.toString(), entry.requestor.toStringWithPort(), entry.hasmac ? std::string(reinterpret_cast<const char*>(entry.macaddress.data()), entry.macaddress.size()) : std::string(), std::string(), entry.dh, age, 0, entry.size, entry.qtype, entry.protocol, response};
+#else
+    dnsdist_ffi_ring_entry_list_t::entry tmp{entry.name.toString(), entry.requestor.toStringWithPort(), std::string(), std::string(), entry.dh, age, 0, entry.size, entry.qtype, entry.protocol, response};
+#endif
+    list->d_entries.push_back(std::move(tmp));
+  }
+  else {
+    dnsdist_ffi_ring_entry_list_t::entry tmp{entry.name.toString(), entry.requestor.toStringWithPort(), std::string(), entry.ds.toStringWithPort(), entry.dh, age, entry.usec, entry.size, entry.qtype, entry.protocol, response};
+    list->d_entries.push_back(std::move(tmp));
+  }
+}
+
+size_t dnsdist_ffi_ring_get_entries(dnsdist_ffi_ring_entry_list_t** out)
+{
+  if (out == nullptr) {
+    return 0;
+  }
+  auto list = std::make_unique<dnsdist_ffi_ring_entry_list_t>();
+  struct timespec now
+  {
+  };
+  gettime(&now);
+
+  for (const auto& shard : g_rings.d_shards) {
+    {
+      auto ql = shard->queryRing.lock();
+      for (const auto& entry : *ql) {
+        addRingEntryToList(list, now, entry);
+      }
+    }
+    {
+      auto rl = shard->respRing.lock();
+      for (const auto& entry : *rl) {
+        addRingEntryToList(list, now, entry);
+      }
+    }
+  }
+
+  auto count = list->d_entries.size();
+  if (count > 0) {
+    *out = list.release();
+  }
+  return count;
+}
+
+size_t dnsdist_ffi_ring_get_entries_by_addr(const char* addr, dnsdist_ffi_ring_entry_list_t** out)
+{
+  if (out == nullptr || addr == nullptr) {
+    return 0;
+  }
+  ComboAddress ca;
+  try {
+    ca = ComboAddress(addr);
+  }
+  catch (const std::exception& e) {
+    vinfolog("Unable to convert address in dnsdist_ffi_ring_get_entries_by_addr: %s", e.what());
+    return 0;
+  }
+  catch (const PDNSException& e) {
+    vinfolog("Unable to convert address in dnsdist_ffi_ring_get_entries_by_addr: %s", e.reason);
+    return 0;
+  }
+
+  auto list = std::make_unique<dnsdist_ffi_ring_entry_list_t>();
+  struct timespec now
+  {
+  };
+  gettime(&now);
+
+  auto compare = ComboAddress::addressOnlyEqual();
+  for (const auto& shard : g_rings.d_shards) {
+    {
+      auto ql = shard->queryRing.lock();
+      for (const auto& entry : *ql) {
+        if (!compare(entry.requestor, ca)) {
+          continue;
+        }
+
+        addRingEntryToList(list, now, entry);
+      }
+    }
+    {
+      auto rl = shard->respRing.lock();
+      for (const auto& entry : *rl) {
+        if (!compare(entry.requestor, ca)) {
+          continue;
+        }
+
+        addRingEntryToList(list, now, entry);
+      }
+    }
+  }
+
+  auto count = list->d_entries.size();
+  if (count > 0) {
+    *out = list.release();
+  }
+  return count;
+}
+
+size_t dnsdist_ffi_ring_get_entries_by_mac(const char* addr, dnsdist_ffi_ring_entry_list_t** out)
+{
+  if (out == nullptr || addr == nullptr) {
+    return 0;
+  }
+
+#if !defined(DNSDIST_RINGS_WITH_MACADDRESS)
+  return 0;
+#else
+  auto list = std::make_unique<dnsdist_ffi_ring_entry_list_t>();
+  struct timespec now
+  {
+  };
+  gettime(&now);
+
+  for (const auto& shard : g_rings.d_shards) {
+    auto ql = shard->queryRing.lock();
+    for (const auto& entry : *ql) {
+      if (memcmp(addr, entry.macaddress.data(), entry.macaddress.size()) != 0) {
+        continue;
+      }
+
+      addRingEntryToList(list, now, entry);
+    }
+  }
+
+  auto count = list->d_entries.size();
+  if (count > 0) {
+    *out = list.release();
+  }
+  return count;
+#endif
+}
+
+struct dnsdist_ffi_network_endpoint_t
+{
+  dnsdist::NetworkEndpoint d_endpoint;
+};
+
+bool dnsdist_ffi_network_endpoint_new(const char* path, size_t pathSize, dnsdist_ffi_network_endpoint_t** out)
+{
+  if (path == nullptr || pathSize == 0 || out == nullptr) {
+    return false;
+  }
+  try {
+    dnsdist::NetworkEndpoint endpoint(std::string(path, pathSize));
+    *out = new dnsdist_ffi_network_endpoint_t{std::move(endpoint)};
+    return true;
+  }
+  catch (const std::exception& e) {
+    vinfolog("Error creating a new network endpoint: %s", e.what());
+    return false;
+  }
+}
+
+bool dnsdist_ffi_network_endpoint_is_valid(const dnsdist_ffi_network_endpoint_t* endpoint)
+{
+  return endpoint != nullptr;
+}
+
+bool dnsdist_ffi_network_endpoint_send(const dnsdist_ffi_network_endpoint_t* endpoint, const char* payload, size_t payloadSize)
+{
+  if (endpoint != nullptr && payload != nullptr && payloadSize != 0) {
+    return endpoint->d_endpoint.send(std::string_view(payload, payloadSize));
+  }
+  return false;
+}
+
+void dnsdist_ffi_network_endpoint_free(dnsdist_ffi_network_endpoint_t* endpoint)
+{
+  delete endpoint;
+}
+
+struct dnsdist_ffi_dnspacket_t
+{
+  dnsdist::DNSPacketOverlay overlay;
+};
+
+bool dnsdist_ffi_dnspacket_parse(const char* packet, size_t packetSize, dnsdist_ffi_dnspacket_t** out)
+{
+  if (packet == nullptr || out == nullptr || packetSize < sizeof(dnsheader)) {
+    return false;
+  }
+
+  try {
+    dnsdist::DNSPacketOverlay overlay(std::string_view(packet, packetSize));
+    *out = new dnsdist_ffi_dnspacket_t{std::move(overlay)};
+    return true;
+  }
+  catch (const std::exception& e) {
+    vinfolog("Error in dnsdist_ffi_dnspacket_parse: %s", e.what());
+  }
+  catch (...) {
+    vinfolog("Error in dnsdist_ffi_dnspacket_parse");
+  }
+  return false;
+}
+
+void dnsdist_ffi_dnspacket_get_qname_raw(const dnsdist_ffi_dnspacket_t* packet, const char** qname, size_t* qnameSize)
+{
+  if (packet == nullptr || qname == nullptr || qnameSize == nullptr) {
+    return;
+  }
+  const auto& storage = packet->overlay.d_qname.getStorage();
+  *qname = storage.data();
+  *qnameSize = storage.size();
+}
+
+uint16_t dnsdist_ffi_dnspacket_get_qtype(const dnsdist_ffi_dnspacket_t* packet)
+{
+  if (packet != nullptr) {
+    return packet->overlay.d_qtype;
+  }
+  return 0;
+}
+
+uint16_t dnsdist_ffi_dnspacket_get_qclass(const dnsdist_ffi_dnspacket_t* packet)
+{
+  if (packet != nullptr) {
+    return packet->overlay.d_qclass;
+  }
+  return 0;
+}
+
+uint16_t dnsdist_ffi_dnspacket_get_records_count_in_section(const dnsdist_ffi_dnspacket_t* packet, uint8_t section)
+{
+  if (packet == nullptr || section > DNSResourceRecord::ADDITIONAL) {
+    return 0;
+  }
+
+  uint16_t count = 0;
+  for (const auto& record : packet->overlay.d_records) {
+    if (record.d_place == section) {
+      count++;
+    }
+  }
+
+  return count;
+}
+
+void dnsdist_ffi_dnspacket_get_record_name_raw(const dnsdist_ffi_dnspacket_t* packet, size_t idx, const char** name, size_t* nameSize)
+{
+  if (packet == nullptr || name == nullptr || nameSize == nullptr || idx >= packet->overlay.d_records.size()) {
+    return;
+  }
+  const auto& storage = packet->overlay.d_records.at(idx).d_name.getStorage();
+  *name = storage.data();
+  *nameSize = storage.size();
+}
+
+uint16_t dnsdist_ffi_dnspacket_get_record_type(const dnsdist_ffi_dnspacket_t* packet, size_t idx)
+{
+  if (packet == nullptr || idx >= packet->overlay.d_records.size()) {
+    return 0;
+  }
+  return packet->overlay.d_records.at(idx).d_type;
+}
+
+uint16_t dnsdist_ffi_dnspacket_get_record_class(const dnsdist_ffi_dnspacket_t* packet, size_t idx)
+{
+  if (packet == nullptr || idx >= packet->overlay.d_records.size()) {
+    return 0;
+  }
+  return packet->overlay.d_records.at(idx).d_class;
+}
+
+uint32_t dnsdist_ffi_dnspacket_get_record_ttl(const dnsdist_ffi_dnspacket_t* packet, size_t idx)
+{
+  if (packet == nullptr || idx >= packet->overlay.d_records.size()) {
+    return 0;
+  }
+  return packet->overlay.d_records.at(idx).d_ttl;
+}
+
+uint16_t dnsdist_ffi_dnspacket_get_record_content_length(const dnsdist_ffi_dnspacket_t* packet, size_t idx)
+{
+  if (packet == nullptr || idx >= packet->overlay.d_records.size()) {
+    return 0;
+  }
+  return packet->overlay.d_records.at(idx).d_contentLength;
+}
+
+uint16_t dnsdist_ffi_dnspacket_get_record_content_offset(const dnsdist_ffi_dnspacket_t* packet, size_t idx)
+{
+  if (packet == nullptr || idx >= packet->overlay.d_records.size()) {
+    return 0;
+  }
+  return packet->overlay.d_records.at(idx).d_contentOffset;
+}
+
+size_t dnsdist_ffi_dnspacket_get_name_at_offset_raw(const char* packet, size_t packetSize, size_t offset, char* name, size_t nameSize)
+{
+  if (packet == nullptr || name == nullptr || nameSize == 0 || offset >= packetSize) {
+    return 0;
+  }
+  try {
+    DNSName parsed(packet, packetSize, offset, true);
+    const auto& storage = parsed.getStorage();
+    if (nameSize < storage.size()) {
+      return 0;
+    }
+    memcpy(name, storage.data(), storage.size());
+    return storage.size();
+  }
+  catch (const std::exception& e) {
+    vinfolog("Error parsing DNSName via dnsdist_ffi_dnspacket_get_name_at_offset_raw: %s", e.what());
+  }
+  return 0;
+}
+
+void dnsdist_ffi_dnspacket_free(dnsdist_ffi_dnspacket_t* packet)
+{
+  if (packet != nullptr) {
+    delete packet;
+  }
+}
+
+bool dnsdist_ffi_metric_declare(const char* name, size_t nameLen, const char* type, const char* description, const char* customName)
+{
+  if (name == nullptr || nameLen == 0 || type == nullptr || description == nullptr) {
+    return false;
+  }
+  auto result = dnsdist::metrics::declareCustomMetric(name, type, description, customName != nullptr ? std::optional<std::string>(customName) : std::nullopt);
+  return !result;
+}
+
+void dnsdist_ffi_metric_inc(const char* metricName, size_t metricNameLen)
+{
+  auto result = dnsdist::metrics::incrementCustomCounter(std::string_view(metricName, metricNameLen), 1U);
+  if (std::get_if<dnsdist::metrics::Error>(&result) != nullptr) {
+    return;
+  }
+}
+
+void dnsdist_ffi_metric_inc_by(const char* metricName, size_t metricNameLen, uint64_t value)
+{
+  auto result = dnsdist::metrics::incrementCustomCounter(std::string_view(metricName, metricNameLen), value);
+  if (std::get_if<dnsdist::metrics::Error>(&result) != nullptr) {
+    return;
+  }
+}
+
+void dnsdist_ffi_metric_dec(const char* metricName, size_t metricNameLen)
+{
+  auto result = dnsdist::metrics::decrementCustomCounter(std::string_view(metricName, metricNameLen), 1U);
+  if (std::get_if<dnsdist::metrics::Error>(&result) != nullptr) {
+    return;
+  }
+}
+
+void dnsdist_ffi_metric_set(const char* metricName, size_t metricNameLen, double value)
+{
+  auto result = dnsdist::metrics::setCustomGauge(std::string_view(metricName, metricNameLen), value);
+  if (std::get_if<dnsdist::metrics::Error>(&result) != nullptr) {
+    return;
+  }
+}
+
+double dnsdist_ffi_metric_get(const char* metricName, size_t metricNameLen, bool isCounter)
+{
+  auto result = dnsdist::metrics::getCustomMetric(std::string_view(metricName, metricNameLen));
+  if (std::get_if<dnsdist::metrics::Error>(&result) != nullptr) {
+    return 0.;
+  }
+  return std::get<double>(result);
+}
+
+const char* dnsdist_ffi_network_message_get_payload(const dnsdist_ffi_network_message_t* msg)
+{
+  if (msg != nullptr) {
+    return msg->payload.c_str();
+  }
+  return nullptr;
+}
+
+size_t dnsdist_ffi_network_message_get_payload_size(const dnsdist_ffi_network_message_t* msg)
+{
+  if (msg != nullptr) {
+    return msg->payload.size();
+  }
+  return 0;
+}
+
+uint16_t dnsdist_ffi_network_message_get_endpoint_id(const dnsdist_ffi_network_message_t* msg)
+{
+  if (msg != nullptr) {
+    return msg->endpointID;
+  }
+  return 0;
+}
+
+#ifndef DISABLE_DYNBLOCKS
+bool dnsdist_ffi_dynamic_blocks_add(const char* address, const char* message, uint8_t action, unsigned int duration, uint8_t clientIPMask, uint8_t clientIPPortMask)
+{
+  try {
+    ComboAddress clientIPCA;
+    try {
+      clientIPCA = ComboAddress(address);
+    }
+    catch (const std::exception& exp) {
+      errlog("dnsdist_ffi_dynamic_blocks_add: Unable to parse '%s': %s", address, exp.what());
+      return false;
+    }
+    catch (const PDNSException& exp) {
+      errlog("dnsdist_ffi_dynamic_blocks_add: Unable to parse '%s': %s", address, exp.reason);
+      return false;
+    }
+
+    AddressAndPortRange target(clientIPCA, clientIPMask, clientIPPortMask);
+
+    struct timespec now
+    {
+    };
+    gettime(&now);
+    auto slow = g_dynblockNMG.getCopy();
+    if (dnsdist::DynamicBlocks::addOrRefreshBlock(slow, now, target, message, duration, static_cast<DNSAction::Action>(action), false, false)) {
+      g_dynblockNMG.setState(slow);
+      return true;
+    }
+  }
+  catch (const std::exception& exp) {
+    errlog("Exception in dnsdist_ffi_dynamic_blocks_add: %s", exp.what());
+  }
+  catch (const PDNSException& exp) {
+    errlog("Exception in dnsdist_ffi_dynamic_blocks_add: %s", exp.reason);
+  }
+  catch (...) {
+    errlog("Exception in dnsdist_ffi_dynamic_blocks_add");
+  }
+  return false;
+}
+
+bool dnsdist_ffi_dynamic_blocks_smt_add(const char* suffix, const char* message, uint8_t action, unsigned int duration)
+{
+  try {
+    DNSName domain;
+    try {
+      domain = DNSName(suffix);
+      domain.makeUsLowerCase();
+    }
+    catch (const std::exception& exp) {
+      errlog("dnsdist_ffi_dynamic_blocks_smt_add: Unable to parse '%s': %s", suffix, exp.what());
+      return false;
+    }
+    catch (const PDNSException& exp) {
+      errlog("dnsdist_ffi_dynamic_blocks_smt_add: Unable to parse '%s': %s", suffix, exp.reason);
+      return false;
+    }
+
+    struct timespec now
+    {
+    };
+    gettime(&now);
+    auto slow = g_dynblockSMT.getCopy();
+    if (dnsdist::DynamicBlocks::addOrRefreshBlockSMT(slow, now, domain, message, duration, static_cast<DNSAction::Action>(action), false)) {
+      g_dynblockSMT.setState(slow);
+      return true;
+    }
+  }
+  catch (const std::exception& exp) {
+    errlog("Exception in dnsdist_ffi_dynamic_blocks_smt_add: %s", exp.what());
+  }
+  catch (const PDNSException& exp) {
+    errlog("Exception in dnsdist_ffi_dynamic_blocks_smt_add: %s", exp.reason);
+  }
+  catch (...) {
+    errlog("Exception in dnsdist_ffi_dynamic_blocks_smt_add");
+  }
+  return false;
+}
+
+struct dnsdist_ffi_dynamic_blocks_list_t
+{
+  std::vector<dnsdist_ffi_dynamic_block_entry_t> d_entries;
+};
+
+size_t dnsdist_ffi_dynamic_blocks_get_entries(dnsdist_ffi_dynamic_blocks_list_t** out)
+{
+  if (out == nullptr) {
+    return 0;
+  }
+
+  auto list = std::make_unique<dnsdist_ffi_dynamic_blocks_list_t>();
+
+  struct timespec now
+  {
+  };
+  gettime(&now);
+
+  auto fullCopy = g_dynblockNMG.getCopy();
+  for (const auto& entry : fullCopy) {
+    const auto& client = entry.first;
+    const auto& details = entry.second;
+    if (!(now < details.until)) {
+      continue;
+    }
+
+    uint64_t counter = details.blocks;
+    if (g_defaultBPFFilter && details.bpf) {
+      counter += g_defaultBPFFilter->getHits(client.getNetwork());
+    }
+    list->d_entries.push_back({strdup(client.toString().c_str()), strdup(details.reason.c_str()), counter, static_cast<uint64_t>(details.until.tv_sec - now.tv_sec), static_cast<uint8_t>(details.action != DNSAction::Action::None ? details.action : g_dynBlockAction), g_defaultBPFFilter && details.bpf, details.warning});
+  }
+
+  auto count = list->d_entries.size();
+  *out = list.release();
+  return count;
+}
+
+size_t dnsdist_ffi_dynamic_blocks_smt_get_entries(dnsdist_ffi_dynamic_blocks_list_t** out)
+{
+  if (out == nullptr) {
+    return 0;
+  }
+
+  auto list = std::make_unique<dnsdist_ffi_dynamic_blocks_list_t>();
+
+  struct timespec now
+  {
+  };
+  gettime(&now);
+
+  auto fullCopy = g_dynblockSMT.getCopy();
+  fullCopy.visit([&now, &list](const SuffixMatchTree<DynBlock>& node) {
+    if (!(now < node.d_value.until)) {
+      return;
+    }
+    auto entry = node.d_value;
+    string key("empty");
+    if (!entry.domain.empty()) {
+      key = entry.domain.toString();
+    }
+    if (entry.action == DNSAction::Action::None) {
+      entry.action = g_dynBlockAction;
+    }
+    list->d_entries.push_back({strdup(key.c_str()), strdup(entry.reason.c_str()), entry.blocks, static_cast<uint64_t>(entry.until.tv_sec - now.tv_sec), static_cast<uint8_t>(entry.action), entry.bpf, entry.warning});
+  });
+
+  auto count = list->d_entries.size();
+  *out = list.release();
+  return count;
+}
+
+const dnsdist_ffi_dynamic_block_entry_t* dnsdist_ffi_dynamic_blocks_list_get(const dnsdist_ffi_dynamic_blocks_list_t* list, size_t idx)
+{
+  if (list == nullptr) {
+    return nullptr;
+  }
+
+  if (idx >= list->d_entries.size()) {
+    return nullptr;
+  }
+
+  return &list->d_entries.at(idx);
+}
+
+void dnsdist_ffi_dynamic_blocks_list_free(dnsdist_ffi_dynamic_blocks_list_t* list)
+{
+  if (list == nullptr) {
+    return;
+  }
+
+  for (auto& entry : list->d_entries) {
+    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory,cppcoreguidelines-no-malloc): this is a C API, RAII is not an option
+    free(entry.key);
+    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory,cppcoreguidelines-no-malloc): this is a C API, RAII is not an option
+    free(entry.reason);
+  }
+
+  // NOLINTNEXTLINE(cppcoreguidelines-owning-memory): this is a C API, RAII is not an option
+  delete list;
+}
+
+#endif /* DISABLE_DYNBLOCKS */
+
+uint32_t dnsdist_ffi_hash(uint32_t seed, const unsigned char* data, size_t dataSize, bool caseInsensitive)
+{
+  if (data == nullptr || dataSize == 0) {
+    return seed;
+  }
+
+  if (caseInsensitive) {
+    return burtleCI(data, dataSize, seed);
+  }
+
+  return burtle(data, dataSize, seed);
 }

@@ -38,8 +38,8 @@ LdapBackend::LdapBackend(const string& suffix)
 
   try {
     d_qname.clear();
-    d_pldap = NULL;
-    d_authenticator = NULL;
+    d_pldap = nullptr;
+    d_authenticator = nullptr;
     d_qlog = arg().mustDo("query-logging");
     d_default_ttl = arg().asNum("default-ttl");
     d_myname = "[LdapBackend]";
@@ -97,7 +97,7 @@ LdapBackend::LdapBackend(const string& suffix)
     g_log << Logger::Error << d_myname << " Caught STL exception: " << e.what() << endl;
   }
 
-  if (d_pldap != NULL) {
+  if (d_pldap != nullptr) {
     delete (d_pldap);
   }
   throw PDNSException("Unable to connect to ldap server");
@@ -293,12 +293,10 @@ public:
 
 class LdapLoader
 {
-  LdapFactory factory;
-
 public:
   LdapLoader()
   {
-    BackendMakers().report(&factory);
+    BackendMakers().report(std::make_unique<LdapFactory>());
     g_log << Logger::Info << "[ldapbackend] This is the ldap backend version " VERSION
 #ifndef REPRODUCIBLE
           << " (" __DATE__ " " __TIME__ ")"

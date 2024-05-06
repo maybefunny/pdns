@@ -23,7 +23,7 @@
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
-#include <errno.h>
+#include <cerrno>
 #include <string>
 #include <set>
 #include <sys/types.h>
@@ -56,7 +56,7 @@
 #include "pdns/auth-zonecache.hh"
 #include "pdns/auth-caches.hh"
 
-/* 
+/*
    All instances of this backend share one s_state, which is indexed by zone name and zone id.
    The s_state is protected by a read/write lock, and the goal it to only interact with it briefly.
    When a query comes in, we take a read lock and COPY the best zone to answer from s_state (BB2DomainInfo object)
@@ -78,7 +78,7 @@ SharedLockGuarded<Bind2Backend::state_t> Bind2Backend::s_state;
 int Bind2Backend::s_first = 1;
 bool Bind2Backend::s_ignore_broken_records = false;
 
-std::mutex Bind2Backend::s_supermaster_config_lock; // protects writes to config file
+std::mutex Bind2Backend::s_autosecondary_config_lock; // protects writes to config file
 std::mutex Bind2Backend::s_startup_lock;
 string Bind2Backend::s_binddirectory;
 
@@ -145,7 +145,7 @@ bool Bind2Backend::safeGetBBDomainInfo(int id, BB2DomainInfo* bbd)
 bool Bind2Backend::safeGetBBDomainInfo(const DNSName& name, BB2DomainInfo* bbd)
 {
   auto state = s_state.read_lock();
-  auto& nameindex = boost::multi_index::get<NameTag>(*state);
+  const auto& nameindex = boost::multi_index::get<NameTag>(*state);
   auto iter = nameindex.find(name);
   if (iter == nameindex.end()) {
     return false;
@@ -157,7 +157,7 @@ bool Bind2Backend::safeGetBBDomainInfo(const DNSName& name, BB2DomainInfo* bbd)
 bool Bind2Backend::safeRemoveBBDomainInfo(const DNSName& name)
 {
   auto state = s_state.write_lock();
-  typedef state_t::index<NameTag>::type nameindex_t;
+  using nameindex_t = state_t::index<NameTag>::type;
   nameindex_t& nameindex = boost::multi_index::get<NameTag>(*state);
 
   nameindex_t::iterator iter = nameindex.find(name);
@@ -235,8 +235,8 @@ bool Bind2Backend::startTransaction(const DNSName& qname, int id)
     fd = -1;
 
     *d_of << "; Written by PowerDNS, don't edit!" << endl;
-    *d_of << "; Zone '" << bbd.d_name << "' retrieved from master " << endl
-          << "; at " << nowTime() << endl; // insert master info here again
+    *d_of << "; Zone '" << bbd.d_name << "' retrieved from primary " << endl
+          << "; at " << nowTime() << endl; // insert primary info here again
 
     return true;
   }
@@ -275,7 +275,7 @@ bool Bind2Backend::abortTransaction()
   return true;
 }
 
-bool Bind2Backend::feedRecord(const DNSResourceRecord& rr, const DNSName& ordername, bool ordernameIsNSEC3)
+bool Bind2Backend::feedRecord(const DNSResourceRecord& rr, const DNSName& /* ordername */, bool /* ordernameIsNSEC3 */)
 {
   if (d_transaction_id < 1) {
     throw DBException("Bind2Backend::feedRecord() called outside of transaction");
@@ -298,7 +298,7 @@ bool Bind2Backend::feedRecord(const DNSResourceRecord& rr, const DNSName& ordern
     throw DBException("out-of-zone data '" + rr.qname.toLogString() + "' during AXFR of zone '" + d_transaction_qname.toLogString() + "'");
   }
 
-  shared_ptr<DNSRecordContent> drc(DNSRecordContent::mastermake(rr.qtype.getCode(), QClass::IN, rr.content));
+  shared_ptr<DNSRecordContent> drc(DNSRecordContent::make(rr.qtype.getCode(), QClass::IN, rr.content));
   string content = drc->getZoneRepresentation();
 
   // SOA needs stripping too! XXX FIXME - also, this should not be here I think
@@ -318,14 +318,14 @@ bool Bind2Backend::feedRecord(const DNSResourceRecord& rr, const DNSName& ordern
   return true;
 }
 
-void Bind2Backend::getUpdatedMasters(vector<DomainInfo>& changedDomains, std::unordered_set<DNSName>& catalogs, CatalogHashMap& catalogHashes)
+void Bind2Backend::getUpdatedPrimaries(vector<DomainInfo>& changedDomains, std::unordered_set<DNSName>& /* catalogs */, CatalogHashMap& /* catalogHashes */)
 {
   vector<DomainInfo> consider;
   {
     auto state = s_state.read_lock();
 
     for (const auto& i : *state) {
-      if (i.d_kind != DomainInfo::Master && this->alsoNotify.empty() && i.d_also_notify.empty())
+      if (i.d_kind != DomainInfo::Primary && this->alsoNotify.empty() && i.d_also_notify.empty())
         continue;
 
       DomainInfo di;
@@ -334,7 +334,7 @@ void Bind2Backend::getUpdatedMasters(vector<DomainInfo>& changedDomains, std::un
       di.last_check = i.d_lastcheck;
       di.notified_serial = i.d_lastnotified;
       di.backend = this;
-      di.kind = DomainInfo::Master;
+      di.kind = DomainInfo::Primary;
       consider.push_back(std::move(di));
     }
   }
@@ -362,7 +362,7 @@ void Bind2Backend::getUpdatedMasters(vector<DomainInfo>& changedDomains, std::un
   }
 }
 
-void Bind2Backend::getAllDomains(vector<DomainInfo>* domains, bool getSerial, bool include_disabled)
+void Bind2Backend::getAllDomains(vector<DomainInfo>* domains, bool getSerial, bool /* include_disabled */)
 {
   SOAData soadata;
 
@@ -377,7 +377,7 @@ void Bind2Backend::getAllDomains(vector<DomainInfo>* domains, bool getSerial, bo
       di.zone = i.d_name;
       di.last_check = i.d_lastcheck;
       di.kind = i.d_kind;
-      di.masters = i.d_masters;
+      di.primaries = i.d_primaries;
       di.backend = this;
       domains->push_back(std::move(di));
     };
@@ -399,22 +399,22 @@ void Bind2Backend::getAllDomains(vector<DomainInfo>* domains, bool getSerial, bo
   }
 }
 
-void Bind2Backend::getUnfreshSlaveInfos(vector<DomainInfo>* unfreshDomains)
+void Bind2Backend::getUnfreshSecondaryInfos(vector<DomainInfo>* unfreshDomains)
 {
   vector<DomainInfo> domains;
   {
     auto state = s_state.read_lock();
     domains.reserve(state->size());
     for (const auto& i : *state) {
-      if (i.d_kind != DomainInfo::Slave)
+      if (i.d_kind != DomainInfo::Secondary)
         continue;
       DomainInfo sd;
       sd.id = i.d_id;
       sd.zone = i.d_name;
-      sd.masters = i.d_masters;
+      sd.primaries = i.d_primaries;
       sd.last_check = i.d_lastcheck;
       sd.backend = this;
-      sd.kind = DomainInfo::Slave;
+      sd.kind = DomainInfo::Secondary;
       domains.push_back(std::move(sd));
     }
   }
@@ -430,6 +430,7 @@ void Bind2Backend::getUnfreshSlaveInfos(vector<DomainInfo>* unfreshDomains)
     catch (...) {
     }
     sd.serial = soadata.serial;
+    // coverity[store_truncates_time_t]
     if (sd.last_check + soadata.refresh < (unsigned int)time(nullptr))
       unfreshDomains->push_back(std::move(sd));
   }
@@ -443,7 +444,7 @@ bool Bind2Backend::getDomainInfo(const DNSName& domain, DomainInfo& di, bool get
 
   di.id = bbd.d_id;
   di.zone = domain;
-  di.masters = bbd.d_masters;
+  di.primaries = bbd.d_primaries;
   di.last_check = bbd.d_lastcheck;
   di.backend = this;
   di.kind = bbd.d_kind;
@@ -491,7 +492,7 @@ void Bind2Backend::alsoNotifies(const DNSName& domain, set<string>* ips)
 void Bind2Backend::parseZoneFile(BB2DomainInfo* bbd)
 {
   NSEC3PARAMRecordContent ns3pr;
-  bool nsec3zone;
+  bool nsec3zone = false;
   if (d_hybrid) {
     DNSSECKeeper dk;
     nsec3zone = dk.getNSEC3PARAM(bbd->d_name, &ns3pr);
@@ -519,7 +520,7 @@ void Bind2Backend::parseZoneFile(BB2DomainInfo* bbd)
   bbd->d_status = "parsed into memory at " + nowTime();
   bbd->d_records = LookButDontTouch<recordstorage_t>(std::move(records));
   bbd->d_nsec3zone = nsec3zone;
-  bbd->d_nsec3param = ns3pr;
+  bbd->d_nsec3param = std::move(ns3pr);
 }
 
 /** THIS IS AN INTERNAL FUNCTION! It does moadnsparser prio impedance matching
@@ -553,7 +554,7 @@ void Bind2Backend::insertRecord(std::shared_ptr<recordstorage_t>& records, const
   bdr.content = content;
   bdr.nsec3hash = hashed;
 
-  if (auth) // Set auth on empty non-terminals
+  if (auth != nullptr) // Set auth on empty non-terminals
     bdr.auth = *auth;
   else
     bdr.auth = true;
@@ -562,11 +563,11 @@ void Bind2Backend::insertRecord(std::shared_ptr<recordstorage_t>& records, const
   records->insert(std::move(bdr));
 }
 
-string Bind2Backend::DLReloadNowHandler(const vector<string>& parts, Utility::pid_t ppid)
+string Bind2Backend::DLReloadNowHandler(const vector<string>& parts, Utility::pid_t /* ppid */)
 {
   ostringstream ret;
 
-  for (vector<string>::const_iterator i = parts.begin() + 1; i < parts.end(); ++i) {
+  for (auto i = parts.begin() + 1; i < parts.end(); ++i) {
     BB2DomainInfo bbd;
     DNSName zone(*i);
     if (safeGetBBDomainInfo(zone, &bbd)) {
@@ -587,12 +588,12 @@ string Bind2Backend::DLReloadNowHandler(const vector<string>& parts, Utility::pi
   return ret.str();
 }
 
-string Bind2Backend::DLDomStatusHandler(const vector<string>& parts, Utility::pid_t ppid)
+string Bind2Backend::DLDomStatusHandler(const vector<string>& parts, Utility::pid_t /* ppid */)
 {
   ostringstream ret;
 
   if (parts.size() > 1) {
-    for (vector<string>::const_iterator i = parts.begin() + 1; i < parts.end(); ++i) {
+    for (auto i = parts.begin() + 1; i < parts.end(); ++i) {
       BB2DomainInfo bbd;
       if (safeGetBBDomainInfo(DNSName(*i), &bbd)) {
         ret << *i << ": " << (bbd.d_loaded ? "" : "[rejected]") << "\t" << bbd.d_status << "\n";
@@ -623,19 +624,19 @@ static void printDomainExtendedStatus(ostringstream& ret, const BB2DomainInfo& i
   ret << "\t On-disk file: " << info.d_filename << " (" << info.d_ctime << ")" << std::endl;
   ret << "\t Kind: ";
   switch (info.d_kind) {
-  case DomainInfo::Master:
-    ret << "Master";
+  case DomainInfo::Primary:
+    ret << "Primary";
     break;
-  case DomainInfo::Slave:
-    ret << "Slave";
+  case DomainInfo::Secondary:
+    ret << "Secondary";
     break;
   default:
     ret << "Native";
   }
   ret << std::endl;
-  ret << "\t Masters: " << std::endl;
-  for (const auto& master : info.d_masters) {
-    ret << "\t\t - " << master.toStringWithPort() << std::endl;
+  ret << "\t Primaries: " << std::endl;
+  for (const auto& primary : info.d_primaries) {
+    ret << "\t\t - " << primary.toStringWithPort() << std::endl;
   }
   ret << "\t Also Notify: " << std::endl;
   for (const auto& also : info.d_also_notify) {
@@ -649,12 +650,12 @@ static void printDomainExtendedStatus(ostringstream& ret, const BB2DomainInfo& i
   ret << "\t Last notified: " << info.d_lastnotified << std::endl;
 }
 
-string Bind2Backend::DLDomExtendedStatusHandler(const vector<string>& parts, Utility::pid_t ppid)
+string Bind2Backend::DLDomExtendedStatusHandler(const vector<string>& parts, Utility::pid_t /* ppid */)
 {
   ostringstream ret;
 
   if (parts.size() > 1) {
-    for (vector<string>::const_iterator i = parts.begin() + 1; i < parts.end(); ++i) {
+    for (auto i = parts.begin() + 1; i < parts.end(); ++i) {
       BB2DomainInfo bbd;
       if (safeGetBBDomainInfo(DNSName(*i), &bbd)) {
         printDomainExtendedStatus(ret, bbd);
@@ -678,7 +679,7 @@ string Bind2Backend::DLDomExtendedStatusHandler(const vector<string>& parts, Uti
   return ret.str();
 }
 
-string Bind2Backend::DLListRejectsHandler(const vector<string>& parts, Utility::pid_t ppid)
+string Bind2Backend::DLListRejectsHandler(const vector<string>& /* parts */, Utility::pid_t /* ppid */)
 {
   ostringstream ret;
   auto rstate = s_state.read_lock();
@@ -689,7 +690,7 @@ string Bind2Backend::DLListRejectsHandler(const vector<string>& parts, Utility::
   return ret.str();
 }
 
-string Bind2Backend::DLAddDomainHandler(const vector<string>& parts, Utility::pid_t ppid)
+string Bind2Backend::DLAddDomainHandler(const vector<string>& parts, Utility::pid_t /* ppid */)
 {
   if (parts.size() < 3)
     return "ERROR: Domain name and zone filename are required";
@@ -758,7 +759,7 @@ Bind2Backend::Bind2Backend(const string& suffix, bool loadZones)
   std::lock_guard<std::mutex> l(s_startup_lock);
 
   setupDNSSEC();
-  if (!s_first) {
+  if (s_first == 0) {
     return;
   }
 
@@ -811,16 +812,16 @@ void Bind2Backend::fixupOrderAndAuth(std::shared_ptr<recordstorage_t>& records, 
 
     if (!iter->qname.isRoot() && shorter.chopOff() && !iter->qname.isRoot()) {
       do {
-        if (nssets.count(shorter)) {
+        if (nssets.count(shorter) != 0u) {
           skip = true;
           break;
         }
       } while (shorter.chopOff() && !iter->qname.isRoot());
     }
 
-    iter->auth = (!skip && (iter->qtype == QType::DS || iter->qtype == QType::RRSIG || !nssets.count(iter->qname)));
+    iter->auth = (!skip && (iter->qtype == QType::DS || iter->qtype == QType::RRSIG || (nssets.count(iter->qname) == 0u)));
 
-    if (!skip && nsec3zone && iter->qtype != QType::RRSIG && (iter->auth || (iter->qtype == QType::NS && !ns3pr.d_flags) || dssets.count(iter->qname))) {
+    if (!skip && nsec3zone && iter->qtype != QType::RRSIG && (iter->auth || (iter->qtype == QType::NS && (ns3pr.d_flags == 0u)) || (dssets.count(iter->qname) != 0u))) {
       Bind2DNSRecord bdr = *iter;
       bdr.nsec3hash = toBase32Hex(hashQNameWithSalt(ns3pr, bdr.qname + zoneName));
       records->replace(iter, bdr);
@@ -832,7 +833,7 @@ void Bind2Backend::fixupOrderAndAuth(std::shared_ptr<recordstorage_t>& records, 
 
 void Bind2Backend::doEmptyNonTerminals(std::shared_ptr<recordstorage_t>& records, const DNSName& zoneName, bool nsec3zone, const NSEC3PARAMRecordContent& ns3pr)
 {
-  bool auth;
+  bool auth = false;
   DNSName shorter;
   std::unordered_set<DNSName> qnames;
   std::unordered_map<DNSName, bool> nonterm;
@@ -845,19 +846,19 @@ void Bind2Backend::doEmptyNonTerminals(std::shared_ptr<recordstorage_t>& records
   for (const auto& bdr : *records) {
 
     if (!bdr.auth && bdr.qtype == QType::NS)
-      auth = (!nsec3zone || !ns3pr.d_flags);
+      auth = (!nsec3zone || (ns3pr.d_flags == 0u));
     else
       auth = bdr.auth;
 
     shorter = bdr.qname;
     while (shorter.chopOff()) {
-      if (!qnames.count(shorter)) {
+      if (qnames.count(shorter) == 0u) {
         if (!(maxent)) {
           g_log << Logger::Error << "Zone '" << zoneName << "' has too many empty non terminals." << endl;
           return;
         }
 
-        if (!nonterm.count(shorter)) {
+        if (nonterm.count(shorter) == 0u) {
           nonterm.emplace(shorter, auth);
           --maxent;
         }
@@ -882,7 +883,7 @@ void Bind2Backend::doEmptyNonTerminals(std::shared_ptr<recordstorage_t>& records
   }
 }
 
-void Bind2Backend::loadConfig(string* status)
+void Bind2Backend::loadConfig(string* status) // NOLINT(readability-function-cognitive-complexity) 13379 https://github.com/PowerDNS/pdns/issues/13379 Habbie: zone2sql.cc, bindbackend2.cc: reduce complexity
 {
   static int domain_id = 1;
 
@@ -931,9 +932,10 @@ void Bind2Backend::loadConfig(string* status)
         continue;
       }
 
-      if (domain.type == "")
+      if (domain.type.empty()) {
         g_log << Logger::Notice << d_logprefix << " Zone '" << domain.name << "' has no type specified, assuming 'native'" << endl;
-      if (domain.type != "master" && domain.type != "slave" && domain.type != "native" && domain.type != "") {
+      }
+      if (domain.type != "primary" && domain.type != "secondary" && domain.type != "native" && !domain.type.empty() && domain.type != "master" && domain.type != "slave") {
         g_log << Logger::Warning << d_logprefix << " Warning! Skipping zone '" << domain.name << "' because type '" << domain.type << "' is invalid" << endl;
         rejected++;
         continue;
@@ -953,16 +955,18 @@ void Bind2Backend::loadConfig(string* status)
       // overwrite what we knew about the domain
       bbd.d_name = domain.name;
       bool filenameChanged = (bbd.d_filename != domain.filename);
-      bool addressesChanged = (bbd.d_masters != domain.masters || bbd.d_also_notify != domain.alsoNotify);
+      bool addressesChanged = (bbd.d_primaries != domain.primaries || bbd.d_also_notify != domain.alsoNotify);
       bbd.d_filename = domain.filename;
-      bbd.d_masters = domain.masters;
+      bbd.d_primaries = domain.primaries;
       bbd.d_also_notify = domain.alsoNotify;
 
       DomainInfo::DomainKind kind = DomainInfo::Native;
-      if (domain.type == "master")
-        kind = DomainInfo::Master;
-      if (domain.type == "slave")
-        kind = DomainInfo::Slave;
+      if (domain.type == "primary" || domain.type == "master") {
+        kind = DomainInfo::Primary;
+      }
+      if (domain.type == "secondary" || domain.type == "slave") {
+        kind = DomainInfo::Secondary;
+      }
 
       bool kindChanged = (bbd.d_kind != kind);
       bbd.d_kind = kind;
@@ -978,7 +982,7 @@ void Bind2Backend::loadConfig(string* status)
           ostringstream msg;
           msg << " error at " + nowTime() + " parsing '" << domain.name << "' from file '" << domain.filename << "': " << ae.reason;
 
-          if (status)
+          if (status != nullptr)
             *status += msg.str();
           bbd.d_status = msg.str();
 
@@ -988,11 +992,11 @@ void Bind2Backend::loadConfig(string* status)
         catch (std::system_error& ae) {
           ostringstream msg;
           if (ae.code().value() == ENOENT && isNew && domain.type == "slave")
-            msg << " error at " + nowTime() << " no file found for new slave domain '" << domain.name << "'. Has not been AXFR'd yet";
+            msg << " error at " + nowTime() << " no file found for new secondary domain '" << domain.name << "'. Has not been AXFR'd yet";
           else
             msg << " error at " + nowTime() + " parsing '" << domain.name << "' from file '" << domain.filename << "': " << ae.what();
 
-          if (status)
+          if (status != nullptr)
             *status += msg.str();
           bbd.d_status = msg.str();
           g_log << Logger::Warning << d_logprefix << msg.str() << endl;
@@ -1002,7 +1006,7 @@ void Bind2Backend::loadConfig(string* status)
           ostringstream msg;
           msg << " error at " + nowTime() + " parsing '" << domain.name << "' from file '" << domain.filename << "': " << ae.what();
 
-          if (status)
+          if (status != nullptr)
             *status += msg.str();
           bbd.d_status = msg.str();
 
@@ -1031,7 +1035,7 @@ void Bind2Backend::loadConfig(string* status)
 
     ostringstream msg;
     msg << " Done parsing domains, " << rejected << " rejected, " << newdomains << " new, " << remdomains << " removed";
-    if (status)
+    if (status != nullptr)
       *status = msg.str();
 
     g_log << Logger::Error << d_logprefix << msg.str() << endl;
@@ -1074,7 +1078,7 @@ void Bind2Backend::queueReloadAndStore(unsigned int id)
   }
 }
 
-bool Bind2Backend::findBeforeAndAfterUnhashed(std::shared_ptr<const recordstorage_t>& records, const DNSName& qname, DNSName& unhashed, DNSName& before, DNSName& after)
+bool Bind2Backend::findBeforeAndAfterUnhashed(std::shared_ptr<const recordstorage_t>& records, const DNSName& qname, DNSName& /* unhashed */, DNSName& before, DNSName& after)
 {
   // for(const auto& record: *records)
   //   cerr<<record.qname<<"\t"<<makeHexDump(record.qname.toDNSString())<<endl;
@@ -1117,7 +1121,7 @@ bool Bind2Backend::getBeforeAndAfterNamesAbsolute(uint32_t id, const DNSName& qn
     return findBeforeAndAfterUnhashed(records, qname, unhashed, before, after);
   }
   else {
-    auto& hashindex = boost::multi_index::get<NSEC3Tag>(*records);
+    const auto& hashindex = boost::multi_index::get<NSEC3Tag>(*records);
 
     // for(auto iter = first; iter != hashindex.end(); iter++)
     //  cerr<<iter->nsec3hash<<endl;
@@ -1144,13 +1148,13 @@ bool Bind2Backend::getBeforeAndAfterNamesAbsolute(uint32_t id, const DNSName& qn
   }
 }
 
-void Bind2Backend::lookup(const QType& qtype, const DNSName& qname, int zoneId, DNSPacket* pkt_p)
+void Bind2Backend::lookup(const QType& qtype, const DNSName& qname, int zoneId, DNSPacket* /* pkt_p */)
 {
   d_handle.reset();
 
   static bool mustlog = ::arg().mustDo("query-logging");
 
-  bool found;
+  bool found = false;
   DNSName domain;
   BB2DomainInfo bbd;
 
@@ -1193,7 +1197,7 @@ void Bind2Backend::lookup(const QType& qtype, const DNSName& qname, int zoneId, 
 
   if (!bbd.d_loaded) {
     d_handle.reset();
-    throw DBException("Zone for '" + d_handle.domain.toLogString() + "' in '" + bbd.d_filename + "' not loaded (file missing, corrupt or master dead)"); // fsck
+    throw DBException("Zone for '" + d_handle.domain.toLogString() + "' in '" + bbd.d_filename + "' not loaded (file missing, corrupt or primary dead)"); // fsck
   }
 
   d_handle.d_records = bbd.d_records.get();
@@ -1203,7 +1207,7 @@ void Bind2Backend::lookup(const QType& qtype, const DNSName& qname, int zoneId, 
 
   d_handle.mustlog = mustlog;
 
-  auto& hashedidx = boost::multi_index::get<UnorderedNameTag>(*d_handle.d_records);
+  const auto& hashedidx = boost::multi_index::get<UnorderedNameTag>(*d_handle.d_records);
   auto range = hashedidx.equal_range(d_handle.qname);
 
   d_handle.d_list = false;
@@ -1286,7 +1290,7 @@ bool Bind2Backend::handle::get_normal(DNSResourceRecord& r)
   return true;
 }
 
-bool Bind2Backend::list(const DNSName& target, int id, bool include_disabled)
+bool Bind2Backend::list(const DNSName& /* target */, int id, bool /* include_disabled */)
 {
   BB2DomainInfo bbd;
 
@@ -1327,12 +1331,12 @@ bool Bind2Backend::handle::get_list(DNSResourceRecord& r)
 
 bool Bind2Backend::autoPrimariesList(std::vector<AutoPrimary>& primaries)
 {
-  if (getArg("supermaster-config").empty())
+  if (getArg("autoprimary-config").empty())
     return false;
 
-  ifstream c_if(getArg("supermasters"), std::ios::in);
+  ifstream c_if(getArg("autoprimaries"), std::ios::in);
   if (!c_if) {
-    g_log << Logger::Error << "Unable to open supermasters file for read: " << stringerror() << endl;
+    g_log << Logger::Error << "Unable to open autoprimaries file for read: " << stringerror() << endl;
     return false;
   }
 
@@ -1340,7 +1344,7 @@ bool Bind2Backend::autoPrimariesList(std::vector<AutoPrimary>& primaries)
   while (getline(c_if, line)) {
     std::istringstream ii(line);
     ii >> sip;
-    if (sip.size() != 0) {
+    if (!sip.empty()) {
       ii >> saccount;
       primaries.emplace_back(sip, "", saccount);
     }
@@ -1350,15 +1354,15 @@ bool Bind2Backend::autoPrimariesList(std::vector<AutoPrimary>& primaries)
   return true;
 }
 
-bool Bind2Backend::superMasterBackend(const string& ip, const DNSName& domain, const vector<DNSResourceRecord>& nsset, string* nameserver, string* account, DNSBackend** db)
+bool Bind2Backend::autoPrimaryBackend(const string& ip, const DNSName& /* domain */, const vector<DNSResourceRecord>& /* nsset */, string* /* nameserver */, string* account, DNSBackend** db)
 {
   // Check whether we have a configfile available.
-  if (getArg("supermaster-config").empty())
+  if (getArg("autoprimary-config").empty())
     return false;
 
-  ifstream c_if(getArg("supermasters").c_str(), std::ios::in); // this was nocreate?
+  ifstream c_if(getArg("autoprimaries").c_str(), std::ios::in); // this was nocreate?
   if (!c_if) {
-    g_log << Logger::Error << "Unable to open supermasters file for read: " << stringerror() << endl;
+    g_log << Logger::Error << "Unable to open autoprimaries file for read: " << stringerror() << endl;
     return false;
   }
 
@@ -1378,7 +1382,7 @@ bool Bind2Backend::superMasterBackend(const string& ip, const DNSName& domain, c
   if (sip != ip) // ip not found in authorization list - reject
     return false;
 
-  // ip authorized as supermaster - accept
+  // ip authorized as autoprimary - accept
   *db = this;
   if (saccount.length() > 0)
     *account = saccount.c_str();
@@ -1409,43 +1413,43 @@ BB2DomainInfo Bind2Backend::createDomainEntry(const DNSName& domain, const strin
   return bbd;
 }
 
-bool Bind2Backend::createSlaveDomain(const string& ip, const DNSName& domain, const string& nameserver, const string& account)
+bool Bind2Backend::createSecondaryDomain(const string& ip, const DNSName& domain, const string& /* nameserver */, const string& account)
 {
-  string filename = getArg("supermaster-destdir") + '/' + domain.toStringNoDot();
+  string filename = getArg("autoprimary-destdir") + '/' + domain.toStringNoDot();
 
   g_log << Logger::Warning << d_logprefix
         << " Writing bind config zone statement for superslave zone '" << domain
-        << "' from supermaster " << ip << endl;
+        << "' from autoprimary " << ip << endl;
 
   {
-    std::lock_guard<std::mutex> l2(s_supermaster_config_lock);
+    std::lock_guard<std::mutex> l2(s_autosecondary_config_lock);
 
-    ofstream c_of(getArg("supermaster-config").c_str(), std::ios::app);
+    ofstream c_of(getArg("autoprimary-config").c_str(), std::ios::app);
     if (!c_of) {
-      g_log << Logger::Error << "Unable to open supermaster configfile for append: " << stringerror() << endl;
-      throw DBException("Unable to open supermaster configfile for append: " + stringerror());
+      g_log << Logger::Error << "Unable to open autoprimary configfile for append: " << stringerror() << endl;
+      throw DBException("Unable to open autoprimary configfile for append: " + stringerror());
     }
 
     c_of << endl;
-    c_of << "# Superslave zone '" << domain.toString() << "' (added: " << nowTime() << ") (account: " << account << ')' << endl;
+    c_of << "# AutoSecondary zone '" << domain.toString() << "' (added: " << nowTime() << ") (account: " << account << ')' << endl;
     c_of << "zone \"" << domain.toStringNoDot() << "\" {" << endl;
-    c_of << "\ttype slave;" << endl;
+    c_of << "\ttype secondary;" << endl;
     c_of << "\tfile \"" << filename << "\";" << endl;
-    c_of << "\tmasters { " << ip << "; };" << endl;
+    c_of << "\tprimaries { " << ip << "; };" << endl;
     c_of << "};" << endl;
     c_of.close();
   }
 
   BB2DomainInfo bbd = createDomainEntry(domain, filename);
-  bbd.d_kind = DomainInfo::Slave;
-  bbd.d_masters.push_back(ComboAddress(ip, 53));
+  bbd.d_kind = DomainInfo::Secondary;
+  bbd.d_primaries.push_back(ComboAddress(ip, 53));
   bbd.setCtime();
   safePutBBDomainInfo(bbd);
 
   return true;
 }
 
-bool Bind2Backend::searchRecords(const string& pattern, int maxResults, vector<DNSResourceRecord>& result)
+bool Bind2Backend::searchRecords(const string& pattern, size_t maxResults, vector<DNSResourceRecord>& result)
 {
   SimpleMatch sm(pattern, true);
   static bool mustlog = ::arg().mustDo("query-logging");
@@ -1467,11 +1471,11 @@ bool Bind2Backend::searchRecords(const string& pattern, int maxResults, vector<D
 
       shared_ptr<const recordstorage_t> rhandle = h.d_records.get();
 
-      for (recordstorage_t::const_iterator ri = rhandle->begin(); result.size() < static_cast<vector<DNSResourceRecord>::size_type>(maxResults) && ri != rhandle->end(); ri++) {
+      for (recordstorage_t::const_iterator ri = rhandle->begin(); result.size() < maxResults && ri != rhandle->end(); ri++) {
         DNSName name = ri->qname.empty() ? i.d_name : (ri->qname + i.d_name);
         if (sm.match(name) || sm.match(ri->content)) {
           DNSResourceRecord r;
-          r.qname = name;
+          r.qname = std::move(name);
           r.domain_id = i.d_id;
           r.content = ri->content;
           r.qtype = ri->qtype;
@@ -1497,9 +1501,9 @@ public:
     declare(suffix, "ignore-broken-records", "Ignore records that are out-of-bound for the zone.", "no");
     declare(suffix, "config", "Location of named.conf", "");
     declare(suffix, "check-interval", "Interval for zonefile changes", "0");
-    declare(suffix, "supermaster-config", "Location of (part of) named.conf where pdns can write zone-statements to", "");
-    declare(suffix, "supermasters", "List of IP-addresses of supermasters", "");
-    declare(suffix, "supermaster-destdir", "Destination directory for newly added slave zones", ::arg()["config-dir"]);
+    declare(suffix, "autoprimary-config", "Location of (part of) named.conf where pdns can write zone-statements to", "");
+    declare(suffix, "autoprimaries", "List of IP-addresses of autoprimaries", "");
+    declare(suffix, "autoprimary-destdir", "Destination directory for newly added secondary zones", ::arg()["config-dir"]);
     declare(suffix, "dnssec-db", "Filename to store & access our DNSSEC metadatabase, empty for none", "");
     declare(suffix, "dnssec-db-journal-mode", "SQLite3 journal mode", "WAL");
     declare(suffix, "hybrid", "Store DNSSEC metadata in other backend", "no");
@@ -1520,7 +1524,7 @@ public:
 private:
   void assertEmptySuffix(const string& suffix)
   {
-    if (suffix.length())
+    if (!suffix.empty())
       throw PDNSException("launch= suffixes are not supported on the bindbackend");
   }
 };
@@ -1531,7 +1535,7 @@ class Bind2Loader
 public:
   Bind2Loader()
   {
-    BackendMakers().report(new Bind2Factory);
+    BackendMakers().report(std::make_unique<Bind2Factory>());
     g_log << Logger::Info << "[bind2backend] This is the bind backend version " << VERSION
 #ifndef REPRODUCIBLE
           << " (" __DATE__ " " __TIME__ ")"

@@ -7,7 +7,7 @@ LMDB backend
 * Superslave: No
 * Case: All lower
 * DNSSEC: Yes
-* Disabled data: No
+* Disabled data: Yes
 * Comments: No
 * Multiple instances: No
 * Zone caching: Yes
@@ -32,7 +32,7 @@ Settings
 ``lmdb-filename``
 ^^^^^^^^^^^^^^^^^
 
-Path to the LMDB file (e.g. */var/spool/powerdns/pdns.lmdb*)
+Path to the LMDB file (e.g. */var/lib/powerdns/pdns.lmdb*)
 
 .. warning::
   On systemd systems,
@@ -51,10 +51,14 @@ Default is 2 on 32 bits systems, and 64 on 64 bits systems.
 ``lmdb-sync-mode``
 ^^^^^^^^^^^^^^^^^^
 
-* Synchronisation mode: sync, nosync, nometasync, mapasync
-* Default: mapasync
+  .. versionchanged:: 4.9.0
 
-``sync``
+  ``mapasync`` choice removed
+
+* Synchronisation mode: sync, nosync, nometasync
+* Default: sync
+
+``sync`` (default since 4.9.0)
   LMDB synchronous mode. Safest option, but also slightly slower. Can  also be enabled with ``lmdb-sync-mode=``
 
 ``nosync``
@@ -64,15 +68,16 @@ Default is 2 on 32 bits systems, and 64 on 64 bits systems.
 ``nometasync``
   flush system buffers to disk only once per transaction, omit the metadata flush. This maintains database integrity, but can potentially lose the last committed transaction if the operating system crashes.
 
-``mapasync`` (default)
-  Use asynchronous flushes to disk. As with nosync, a system crash can then corrupt the database or lose the last transactions.
+``mapasync`` (default before 4.9.0)
+  Due to a bug before version 4.9.0, this actually gave ``sync`` behaviour.
+  The ``mapasync`` choice has been removed in version 4.9.0.
 
 .. _setting-lmdb-schema-version:
 
 ``lmdb-schema-version``
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-Determines the maximum schema version LMDB is allowed to upgrade to. If the on disk LMDB database has a lower version that the current version of the LMDB schema the backend will not start, unless this setting allows it to upgrade the schema. If the version of the DB is already the same as the current schema version this setting is not checked and the backend starts normally.
+Determines the maximum schema version LMDB is allowed to upgrade to. If the on disk LMDB database has a lower version than the current version of the LMDB schema the backend will not start, unless this setting allows it to upgrade the schema. If the version of the DB is already the same as the current schema version this setting is not checked and the backend starts normally.
 
 The default value for this setting is the highest supported schema version for the version of PowerDNS you are starting. if you want to prevent automatic schema upgrades, explicitly set this setting to the current default before upgrading PowerDNS.
 
@@ -81,7 +86,9 @@ PowerDNS Version  LMDB Schema version
 ================  ===================
 4.2.x             1
 4.3.x             2
-4.4.x and up      3
+4.4.x to 4.6.x    3
+4.7.x and up      4
+4.8.x and up      5
 ================  ===================
 
 .. _settings-lmdb-random-ids:
@@ -91,8 +98,12 @@ PowerDNS Version  LMDB Schema version
 
   .. versionadded:: 4.7.0
 
+-  Boolean
+-  Default: no
+
 Numeric IDs inside the database are generated randomly instead of sequentially.
 If some external process is synchronising databases between systems, this will avoid conflicts when objects (domains, keys, etc.) get added.
+This will also improve the detection of recreated zones for :doc:`Catalog Zones <../catalog>` producers.
 
 .. _settings-lmdb-map-size:
 
@@ -104,6 +115,34 @@ If some external process is synchronising databases between systems, this will a
 Size, in megabytes, of each LMDB database.
 This number can be increased later, but never decreased.
 Defaults to 100 on 32 bit systems, and 16000 on 64 bit systems.
+
+.. _settings-lmdb-flag-deleted:
+
+``lmdb-flag-deleted``
+^^^^^^^^^^^^^^^^^^^^^
+
+  .. versionadded:: 4.8.0
+
+-  Boolean
+-  Default: no
+
+Instead of deleting items from the database, flag them as deleted in the item's `Lightning Stream <https://doc.powerdns.com/lightningstream>`_ header.
+Only enable this if you are using Lightning Stream.
+
+``lmdb-lightning-stream``
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  .. versionadded:: 4.8.0
+
+-  Boolean
+-  Default: no
+
+Run in Lightning Stream compatible mode. This:
+
+* forces ``flag-deleted`` on
+* forces ``random-ids`` on
+* handles duplicate entries in databases that can result from domains being added on two Lightning Stream nodes at the same time
+* aborts startup if ``shards`` is not set to ``1``
 
 LMDB Structure
 --------------

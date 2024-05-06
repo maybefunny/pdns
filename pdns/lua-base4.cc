@@ -1,3 +1,4 @@
+#include <cassert>
 #include <fstream>
 #include <unordered_set>
 #include <unordered_map>
@@ -14,20 +15,19 @@
 #include "ext/luawrapper/include/LuaContext.hpp"
 #include "dns_random.hh"
 
-BaseLua4::BaseLua4() {
-}
+BaseLua4::BaseLua4() = default;
 
-int BaseLua4::loadFile(const std::string &fname) {
-  int ret = 0;
+void BaseLua4::loadFile(const std::string& fname)
+{
   std::ifstream ifs(fname);
   if (!ifs) {
-    ret = errno;
-    SLOG(g_log<<Logger::Error<<"Unable to read configuration file from '"<<fname<<"': "<<stringerror(ret)<<endl,
-         g_slog->withName("lua")->error(Logr::Error, ret, "Unable to read configuration file", "file", Logging::Loggable(fname)));
-    return ret;
+    auto ret = errno;
+    auto msg = stringerror(ret);
+    SLOG(g_log << Logger::Error << "Unable to read configuration file from '" << fname << "': " << msg << endl,
+         g_slog->withName("lua")->error(Logr::Error, ret, "Unable to read configuration file", "file", Logging::Loggable(fname), "msg", Logging::Loggable(msg)));
+    throw std::runtime_error(msg);
   }
   loadStream(ifs);
-  return 0;
 };
 
 void BaseLua4::loadString(const std::string &script) {
@@ -45,7 +45,7 @@ void BaseLua4::prepareContext() {
   Features features;
   getFeatures(features);
   d_lw->writeVariable("pdns_features", features);
-  
+
   // dnsheader
   d_lw->registerFunction<int(dnsheader::*)()>("getID", [](dnsheader& dh) { return ntohs(dh.id); });
   d_lw->registerFunction<bool(dnsheader::*)()>("getCD", [](dnsheader& dh) { return dh.cd; });
@@ -216,29 +216,31 @@ void BaseLua4::prepareContext() {
   d_lw->registerFunction("match", (bool (NetmaskGroup::*)(const ComboAddress&) const)&NetmaskGroup::match);
 
   // DNSRecord
-  d_lw->writeFunction("newDR", [](const DNSName &name, const std::string &type, unsigned int ttl, const std::string &content, int place){ QType qtype; qtype = type; auto dr = DNSRecord(); dr.d_name = name; dr.d_type = qtype.getCode(); dr.d_ttl = ttl; dr.d_content = shared_ptr<DNSRecordContent>(DNSRecordContent::mastermake(dr.d_type, QClass::IN, content)); dr.d_place = static_cast<DNSResourceRecord::Place>(place); return dr; });
+  d_lw->writeFunction("newDR", [](const DNSName& name, const std::string& type, unsigned int ttl, const std::string& content, int place) { QType qtype; qtype = type; auto dr = DNSRecord(); dr.d_name = name; dr.d_type = qtype.getCode(); dr.d_ttl = ttl; dr.setContent(shared_ptr<DNSRecordContent>(DNSRecordContent::make(dr.d_type, QClass::IN, content))); dr.d_place = static_cast<DNSResourceRecord::Place>(place); return dr; });
   d_lw->registerMember("name", &DNSRecord::d_name);
   d_lw->registerMember("type", &DNSRecord::d_type);
   d_lw->registerMember("ttl", &DNSRecord::d_ttl);
   d_lw->registerMember("place", &DNSRecord::d_place);
-  d_lw->registerFunction<string(DNSRecord::*)()>("getContent", [](const DNSRecord& dr) { return dr.d_content->getZoneRepresentation(); });
+  d_lw->registerFunction<string(DNSRecord::*)()>("getContent", [](const DNSRecord& dr) { return dr.getContent()->getZoneRepresentation(); });
   d_lw->registerFunction<boost::optional<ComboAddress>(DNSRecord::*)()>("getCA", [](const DNSRecord& dr) {
       boost::optional<ComboAddress> ret;
 
-      if(auto arec = std::dynamic_pointer_cast<ARecordContent>(dr.d_content))
+      if(auto arec = getRR<ARecordContent>(dr))
         ret=arec->getCA(53);
-      else if(auto aaaarec = std::dynamic_pointer_cast<AAAARecordContent>(dr.d_content))
+      else if(auto aaaarec = getRR<AAAARecordContent>(dr))
         ret=aaaarec->getCA(53);
       return ret;
     });
-  d_lw->registerFunction<void(DNSRecord::*)(const std::string&)>("changeContent", [](DNSRecord& dr, const std::string& newContent) { dr.d_content = shared_ptr<DNSRecordContent>(DNSRecordContent::mastermake(dr.d_type, 1, newContent)); });
+  d_lw->registerFunction<void (DNSRecord::*)(const std::string&)>("changeContent", [](DNSRecord& dr, const std::string& newContent) { dr.setContent(shared_ptr<DNSRecordContent>(DNSRecordContent::make(dr.d_type, 1, newContent))); });
 
   // pdnsload
   d_lw->writeFunction("pdnslog", [](const std::string& msg, boost::optional<int> loglevel) {
     SLOG(g_log << (Logger::Urgency)loglevel.get_value_or(Logger::Warning) << msg<<endl,
          g_slog->withName("lua")->info(static_cast<Logr::Priority>(loglevel.get_value_or(Logr::Warning)), msg));
   });
-  d_lw->writeFunction("pdnsrandom", [](boost::optional<uint32_t> maximum) { return dns_random(maximum.get_value_or(0xffffffff)); });
+  d_lw->writeFunction("pdnsrandom", [](boost::optional<uint32_t> maximum) {
+    return maximum ? dns_random(*maximum) : dns_random_uint32();
+  });
 
   // certain constants
 
@@ -293,4 +295,4 @@ void BaseLua4::loadStream(std::istream &is) {
   postLoad();
 }
 
-BaseLua4::~BaseLua4() { }
+BaseLua4::~BaseLua4() = default;

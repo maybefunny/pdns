@@ -99,6 +99,13 @@ class GettagRecursorTest(RecursorTest):
         return true
       end
 
+      local tm = os.time()
+      if dq.queryTime.tv_sec < tm - 1 or dq.queryTime.tv_sec > tm + 1 then
+        pdnslog("queryTime is wrong")
+        dq.rcode = pdns.REFUSED
+        return true
+      end
+
       if dq.qtype == pdns.A then
         dq:addAnswer(pdns.A, '192.0.2.1')
       elseif dq.qtype == pdns.AAAA then
@@ -572,6 +579,7 @@ class PDNSRandomTest(RecursorTest):
     function preresolve (dq)
       dq.rcode = pdns.NOERROR
       dq:addAnswer(pdns.TXT, pdnsrandom())
+      dq.variable = true
       return true
     end
     """
@@ -998,7 +1006,7 @@ end
         """ postresolve_ffi: test that we can do a DROP for a name and type combo"""
         query = dns.message.make_query('example', 'TXT')
         res = self.sendUDPQuery(query)
-        self.assertEquals(res, None)
+        self.assertEqual(res, None)
 
     def testNXDOMAIN(self):
         """ postresolve_ffi: test that we can return a NXDOMAIN for a name and type combo"""

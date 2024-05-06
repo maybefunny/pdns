@@ -134,7 +134,7 @@ Tuning related functions
   See also :func:`setRandomizedOutgoingSockets`.
   The default is to use a linearly increasing counter from 0 to 65535, wrapping back to 0 when necessary.
 
-.. function:: setRandomizedOutgoingSockets(val):
+.. function:: setRandomizedOutgoingSockets(val)
 
   .. versionadded:: 1.8.0
 
@@ -163,13 +163,13 @@ Tuning related functions
 
 .. function:: setTCPRecvTimeout(num)
 
-  Set the read timeout on TCP connections from the client, in seconds
+  Set the read timeout on TCP connections from the client, in seconds. Defaults to 2
 
   :param int num:
 
 .. function:: setTCPSendTimeout(num)
 
-  Set the write timeout on TCP connections from the client, in seconds
+  Set the write timeout on TCP connections from the client, in seconds. Defaults to 2
 
   :param int num:
 
@@ -181,13 +181,14 @@ Tuning related functions
 
   :param int num: maximum number of UDP queries to accept
 
-.. function:: setUDPSocketBufferSize(recv, send)
+.. function:: setUDPSocketBufferSizes(recv, send)
 
   .. versionadded:: 1.7.0
 
   Set the size of the receive (``SO_RCVBUF``) and send (``SO_SNDBUF``) buffers for incoming UDP sockets. On Linux the default
   values correspond to ``net.core.rmem_default`` and ``net.core.wmem_default`` , and the maximum values are restricted
   by ``net.core.rmem_max`` and ``net.core.wmem_max``.
+  Since 1.9.0, on Linux, dnsdist will automatically try to raise the buffer sizes to the maximum value allowed by the system (``net.core.rmem_max`` and ``net.core.wmem_max``) if :func:`setUDPSocketBufferSizes` is not set.
 
   :param int recv: ``SO_RCVBUF`` value. Default is 0, meaning the system value will be kept.
   :param int send: ``SO_SNDBUF`` value. Default is 0, meaning the system value will be kept.

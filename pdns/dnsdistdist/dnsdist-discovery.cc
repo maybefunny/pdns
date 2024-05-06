@@ -27,6 +27,7 @@
 #include "dnsparser.hh"
 #include "dolog.hh"
 #include "sstuff.hh"
+#include "threadname.hh"
 
 namespace dnsdist
 {
@@ -37,7 +38,7 @@ const uint16_t ServiceDiscovery::s_defaultDoHSVCKey{7};
 
 bool ServiceDiscovery::addUpgradeableServer(std::shared_ptr<DownstreamState>& server, uint32_t interval, std::string poolAfterUpgrade, uint16_t dohSVCKey, bool keepAfterUpgrade)
 {
-  s_upgradeableBackends.lock()->push_back(std::make_shared<UpgradeableBackend>(UpgradeableBackend{server, poolAfterUpgrade, 0, interval, dohSVCKey, keepAfterUpgrade}));
+  s_upgradeableBackends.lock()->push_back(std::make_shared<UpgradeableBackend>(UpgradeableBackend{server, std::move(poolAfterUpgrade), 0, interval, dohSVCKey, keepAfterUpgrade}));
   return true;
 }
 
@@ -50,13 +51,9 @@ struct DesignatedResolvers
 
 static bool parseSVCParams(const PacketBuffer& answer, std::map<uint16_t, DesignatedResolvers>& resolvers)
 {
-  if (answer.size() <= sizeof(struct dnsheader)) {
-    throw std::runtime_error("Looking for SVC records in a packet smaller than a DNS header");
-  }
-
   std::map<DNSName, std::vector<ComboAddress>> hints;
-  const struct dnsheader* dh = reinterpret_cast<const struct dnsheader*>(answer.data());
-  PacketReader pr(pdns_string_view(reinterpret_cast<const char*>(answer.data()), answer.size()));
+  const dnsheader_aligned dh(answer.data());
+  PacketReader pr(std::string_view(reinterpret_cast<const char*>(answer.data()), answer.size()));
   uint16_t qdcount = ntohs(dh->qdcount);
   uint16_t ancount = ntohs(dh->ancount);
   uint16_t nscount = ntohs(dh->nscount);
@@ -150,6 +147,7 @@ static bool handleSVCResult(const PacketBuffer& answer, const ComboAddress& exis
   }
 
   for (const auto& [priority, resolver] : resolvers) {
+    (void)priority;
     /* do not compare the ports */
     std::set<ComboAddress, ComboAddress::addressOnlyLessThan> tentativeAddresses;
     ServiceDiscovery::DiscoveredResolverConfig tempConfig;
@@ -228,7 +226,7 @@ static bool handleSVCResult(const PacketBuffer& answer, const ComboAddress& exis
     tempConfig.d_subjectName = resolver.target.toStringNoDot();
     tempConfig.d_addr.sin4.sin_port = tempConfig.d_port;
 
-    config = tempConfig;
+    config = std::move(tempConfig);
     return true;
   }
 
@@ -274,9 +272,10 @@ bool ServiceDiscovery::getDiscoveredConfig(const UpgradeableBackend& upgradeable
 
     sock.writenWithTimeout(reinterpret_cast<const char*>(packet.data()), packet.size(), backend->d_config.tcpSendTimeout);
 
+    const struct timeval remainingTime = {.tv_sec = backend->d_config.tcpRecvTimeout, .tv_usec = 0};
     uint16_t responseSize = 0;
-    auto got = sock.readWithTimeout(reinterpret_cast<char*>(&responseSize), sizeof(responseSize), backend->d_config.tcpRecvTimeout);
-    if (got < 0 || static_cast<size_t>(got) != sizeof(responseSize)) {
+    auto got = readn2WithTimeout(sock.getHandle(), &responseSize, sizeof(responseSize), remainingTime);
+    if (got != sizeof(responseSize)) {
       if (g_verbose) {
         warnlog("Error while waiting for the ADD upgrade response size from backend %s: %d", addr.toStringWithPort(), got);
       }
@@ -285,8 +284,8 @@ bool ServiceDiscovery::getDiscoveredConfig(const UpgradeableBackend& upgradeable
 
     packet.resize(ntohs(responseSize));
 
-    got = sock.readWithTimeout(reinterpret_cast<char*>(packet.data()), packet.size(), backend->d_config.tcpRecvTimeout);
-    if (got < 0 || static_cast<size_t>(got) != packet.size()) {
+    got = readn2WithTimeout(sock.getHandle(), packet.data(), packet.size(), remainingTime);
+    if (got != packet.size()) {
       if (g_verbose) {
         warnlog("Error while waiting for the ADD upgrade response from backend %s: %d", addr.toStringWithPort(), got);
       }
@@ -369,8 +368,7 @@ static bool checkBackendUsability(std::shared_ptr<DownstreamState>& ds)
       sock.bind(ds->d_config.sourceAddr);
     }
 
-    time_t now = time(nullptr);
-    auto handler = std::make_unique<TCPIOHandler>(ds->d_config.d_tlsSubjectName, ds->d_config.d_tlsSubjectIsAddr, sock.releaseHandle(), timeval{ds->d_config.checkTimeout, 0}, ds->d_tlsCtx, now);
+    auto handler = std::make_unique<TCPIOHandler>(ds->d_config.d_tlsSubjectName, ds->d_config.d_tlsSubjectIsAddr, sock.releaseHandle(), timeval{ds->d_config.checkTimeout, 0}, ds->d_tlsCtx);
     handler->connect(ds->d_config.tcpFastOpen, ds->d_config.remote, timeval{ds->d_config.checkTimeout, 0});
     return true;
   }
@@ -399,15 +397,18 @@ bool ServiceDiscovery::tryToUpgradeBackend(const UpgradeableBackend& backend)
 
   DownstreamState::Config config(backend.d_ds->d_config);
   config.remote = discoveredConfig.d_addr;
-  if (discoveredConfig.d_port != 0) {
-    config.remote.setPort(discoveredConfig.d_port);
-  }
-  else {
-    if (discoveredConfig.d_protocol == dnsdist::Protocol::DoT) {
-      config.remote.setPort(853);
+  config.remote.setPort(discoveredConfig.d_port);
+
+  if (backend.keepAfterUpgrade && config.availability == DownstreamState::Availability::Up) {
+    /* it's OK to keep the forced state if we replace the initial
+       backend, but if we are adding a new backend, it should not
+       inherit that setting, especially since DoX backends are much
+       more likely to fail (certificate errors, ...) */
+    if (config.d_upgradeToLazyHealthChecks) {
+      config.availability = DownstreamState::Availability::Lazy;
     }
-    else if (discoveredConfig.d_protocol == dnsdist::Protocol::DoH) {
-      config.remote.setPort(443);
+    else {
+      config.availability = DownstreamState::Availability::Auto;
     }
   }
 
@@ -497,6 +498,7 @@ bool ServiceDiscovery::tryToUpgradeBackend(const UpgradeableBackend& backend)
 
 void ServiceDiscovery::worker()
 {
+  setThreadName("dnsdist/discove");
   while (true) {
     time_t now = time(nullptr);
 

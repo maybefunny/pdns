@@ -12,8 +12,8 @@ AC_CONFIG_HEADERS([config.h])
 
 AC_CANONICAL_HOST
 # Add some default CFLAGS and CXXFLAGS, can be appended to using the environment variables
-CFLAGS="-g -O2 -Wall -Wextra -Wshadow -Wno-unused-parameter -Wmissing-declarations -Wredundant-decls $CFLAGS"
-CXXFLAGS="-g -O2 -Wall -Wextra -Wshadow -Wno-unused-parameter -Wmissing-declarations -Wredundant-decls $CXXFLAGS"
+CFLAGS="-g -O2 -Wall -Wextra -Wshadow -Wmissing-declarations -Wredundant-decls $CFLAGS"
+CXXFLAGS="-g -O2 -Wall -Wextra -Wshadow -Wmissing-declarations -Wredundant-decls $CXXFLAGS"
 
 AC_SUBST([pdns_configure_args], ["$ac_configure_args"])
 AC_DEFINE_UNQUOTED([PDNS_CONFIG_ARGS],
@@ -40,6 +40,7 @@ LT_INIT([disable-static dlopen])
 PDNS_CHECK_OS
 PTHREAD_SET_NAME
 AC_FUNC_STRERROR_R
+AX_CXX_CXXFS
 
 PDNS_WITH_LUA([mandatory])
 PDNS_CHECK_LUA_HPP
@@ -84,6 +85,7 @@ AC_CHECK_HEADERS(
 	)],
 	[have_mmap=no]
 )
+AC_CHECK_HEADERS([sys/random.h])
 
 PDNS_WITH_LIBSODIUM
 PDNS_WITH_LIBDECAF
@@ -128,6 +130,7 @@ PDNS_ENABLE_UNIT_TESTS
 PDNS_ENABLE_BACKEND_UNIT_TESTS
 PDNS_ENABLE_REPRODUCIBLE
 PDNS_ENABLE_FUZZ_TARGETS
+PDNS_ENABLE_COVERAGE
 
 PDNS_WITH_SQLITE3
 
@@ -152,7 +155,9 @@ PDNS_FROM_GIT
 dnl Checks for library functions.
 dnl the *_r functions are in posix so we can use them unconditionally, but the ext/yahttp code is
 dnl using the defines.
-AC_CHECK_FUNCS_ONCE([strcasestr localtime_r gmtime_r recvmmsg sched_setscheduler getrandom arc4random])
+AC_CHECK_FUNCS_ONCE([strcasestr localtime_r gmtime_r recvmmsg sched_setscheduler])
+AC_CHECK_FUNCS_ONCE([getrandom getentropy arc4random arc4random_uniform arc4random_buf])
+PDNS_CHECK_SECURE_MEMSET
 
 AM_CONDITIONAL([HAVE_RECVMMSG], [test "x$ac_cv_func_recvmmsg" = "xyes"])
 
@@ -164,6 +169,7 @@ AC_SUBST([LIBDL], [$lt_cv_dlopen_libs])
 
 PDNS_ENABLE_VERBOSE_LOGGING
 PDNS_ENABLE_PKCS11
+PDNS_ENABLE_GSS_TSIG
 
 AC_SUBST([socketdir])
 socketdir="/var/run"
@@ -304,11 +310,17 @@ LDFLAGS="$RELRO_LDFLAGS $LDFLAGS"
 CFLAGS="$PIE_CFLAGS $CFLAGS"
 CXXFLAGS="$PIE_CFLAGS $CXXFLAGS"
 PROGRAM_LDFLAGS="$PIE_LDFLAGS $PROGRAM_LDFLAGS"
+AS_IF([test "$ax_cxx_cv_filesystem_lib" != "none"],
+ [PROGRAM_LDFLAGS="$PROGRAM_LDFLAGS -l$ax_cxx_cv_filesystem_lib"],
+ []
+)
 AC_SUBST([PROGRAM_LDFLAGS])
 
 PDNS_ENABLE_COVERAGE
+PDNS_INIT_AUTO_VARS
 PDNS_ENABLE_SANITIZERS
 PDNS_ENABLE_MALLOC_TRACE
+PDNS_ENABLE_LTO
 
 AC_SUBST(LIBS)
 
@@ -324,6 +336,9 @@ AC_SUBST([IPCRYPT_LIBS], ['$(top_builddir)/ext/ipcrypt/libipcrypt.la'])
 CFLAGS="$SANITIZER_FLAGS $CFLAGS"
 CXXFLAGS="$SANITIZER_FLAGS $CXXFLAGS"
 
+CCVERSION=`$CC --version | head -1`
+CXXVERSION=`$CXX --version | head -1`
+
 AC_ARG_VAR(PACKAGEVERSION, [The version used in secpoll queries])
 AS_IF([test "x$PACKAGEVERSION" != "x"],
   [AC_DEFINE_UNQUOTED([PACKAGEVERSION], "$PACKAGEVERSION", [Set to the package version used for secpoll])]
@@ -337,8 +352,8 @@ AC_CONFIG_FILES([
   pdns/Makefile
   codedocs/Makefile
   docs/Makefile
-  pdns/pdns.init
   ext/Makefile
+  ext/arc4random/Makefile
   ext/ipcrypt/Makefile
   ext/yahttp/Makefile
   ext/yahttp/yahttp/Makefile
@@ -364,8 +379,8 @@ AC_MSG_NOTICE([=====================])
 AC_MSG_NOTICE([])
 AC_MSG_NOTICE([Configured with: $pdns_configure_args])
 AC_MSG_NOTICE([])
-AC_MSG_NOTICE([CC: $CC])
-AC_MSG_NOTICE([CXX: $CXX])
+AC_MSG_NOTICE([CC: $CC ($CCVERSION)])
+AC_MSG_NOTICE([CXX: $CXX ($CXXVERSION)])
 AC_MSG_NOTICE([LD: $LD])
 AC_MSG_NOTICE([CFLAGS: $CFLAGS])
 AC_MSG_NOTICE([CPPFLAGS: $CPPFLAGS])
@@ -414,6 +429,9 @@ AS_IF([test "x$LUAPC" != "x"],
 ])
 AS_IF([test "x$enable_experimental_pkcs11" = "xyes"],
   [AC_MSG_NOTICE([PKCS-11: yes])]
+)
+AS_IF([test "x$enable_experimental_gss_tsig" = "xyes"],
+  [AC_MSG_NOTICE([GSS-TSIG: yes])]
 )
 AS_IF([test "x$enable_lua_records" = "xyes"],
   [AC_MSG_NOTICE([LUA records: yes])]

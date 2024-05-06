@@ -151,6 +151,20 @@ extendedErrorExtra
 
 An extended error extra text (:rfc:`8914`) to set on RPZ hits. See :ref:`setting-extended-resolution-errors`.
 
+includeSOA
+^^^^^^^^^^
+.. versionadded:: 4.9.0
+
+Include the RPZ's SOA record to the reply's additional section if modified by a policy hit.
+Defaults to ``false``.
+
+ignoreDuplicates
+^^^^^^^^^^^^^^^^
+.. versionadded:: 5.0.0
+
+When loading an RPZ, ignore duplicate entries, keeping only the first one present in the zone.
+Defaults to ``false``, duplicate entries will cause failure to load the zone.
+
 maxTTL
 ^^^^^^
 The maximum TTL value of the synthesized records, overriding a higher value from ``defttl`` or the zone. Default is unlimited.
@@ -200,7 +214,8 @@ Base64 encoded TSIG secret
 refresh
 ^^^^^^^
 An integer describing the interval between checks for updates.
-By default, the RPZ zone's default is used
+By default, the RPZ zone's default is used.
+If allowed by :ref:`setting-allow-notify-for` and :ref:`setting-allow-notify-from`, a ``notify`` for an RPZ zone will initiate a freshness check.
 
 maxReceivedMBytes
 ^^^^^^^^^^^^^^^^^
@@ -215,10 +230,18 @@ When unset, :ref:`setting-query-local-address` is used.
 axfrTimeout
 ^^^^^^^^^^^
 .. versionadded:: 4.1.2
-  Before 4.1.2, the timeout was fixed on 10 seconds.
+   Before 4.1.2, the timeout was fixed on 10 seconds.
 
-The timeout in seconds of the total initial AXFR transaction.
-20 by default.
+.. versionchanged:: 4.5.12
+   The same timeout applies to followup IXFR transactions.
+
+.. versionchanged:: 4.6.5
+   The same timeout applies to followup IXFR transactions.
+
+.. versionchanged:: 4.7.4
+   The same timeout applies to followup IXFR transactions.
+
+The timeout in seconds of the total initial AXFR transaction. 20 by default.
 
 dumpFile
 ^^^^^^^^

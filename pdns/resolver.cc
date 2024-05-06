@@ -27,7 +27,7 @@
 #include <pthread.h>
 #include <semaphore.h>
 #include <iostream>
-#include <errno.h>
+#include <cerrno>
 #include "misc.hh"
 #include <algorithm>
 #include <sstream>
@@ -48,6 +48,7 @@
 
 #include "dns_random.hh"
 #include <poll.h>
+#include "gss_context.hh"
 #include "namespaces.hh"
 
 using pdns::resolver::parseResult;
@@ -175,7 +176,7 @@ uint16_t Resolver::sendResolve(const ComboAddress& remote, const ComboAddress& l
       // try to make socket
       sock = makeQuerySocket(local, true);
       if (sock < 0)
-        throw ResolverException("Unable to create local socket on '"+lstr+"'' to '"+remote.toStringWithPort()+"': "+stringerror());
+        throw ResolverException("Unable to create local socket on '"+lstr+"'' to '"+remote.toLogString()+"': "+stringerror());
       setNonBlocking( sock );
       locals[lstr] = sock;
     }
@@ -185,14 +186,14 @@ uint16_t Resolver::sendResolve(const ComboAddress& remote, const ComboAddress& l
     *localsock = sock;
   }
   if(sendto(sock, &packet[0], packet.size(), 0, (struct sockaddr*)(&remote), remote.getSocklen()) < 0) {
-    throw ResolverException("Unable to ask query of '"+remote.toStringWithPort()+"': "+stringerror());
+    throw ResolverException("Unable to ask query of '"+remote.toLogString()+"': "+stringerror());
   }
   return randomid;
 }
 
 namespace pdns {
   namespace resolver {
-    int parseResult(MOADNSParser& mdp, const DNSName& origQname, uint16_t origQtype, uint16_t id, Resolver::res_t* result)
+    int parseResult(MOADNSParser& mdp, const DNSName& origQname, uint16_t /* origQtype */, uint16_t id, Resolver::res_t* result)
     {
       result->clear();
 
@@ -203,7 +204,7 @@ namespace pdns {
         if(mdp.d_header.id != id)
           throw ResolverException("Remote nameserver replied with wrong id");
         if(mdp.d_header.qdcount != 1)
-          throw ResolverException("resolver: received answer with wrong number of questions ("+itoa(mdp.d_header.qdcount)+")");
+          throw ResolverException("resolver: received answer with wrong number of questions ("+std::to_string(mdp.d_header.qdcount)+")");
         if(mdp.d_qname != origQname)
           throw ResolverException(string("resolver: received an answer to another question (")+mdp.d_qname.toLogString()+"!="+ origQname.toLogString()+".)");
       }
@@ -216,7 +217,7 @@ namespace pdns {
         rr.qname = i.first.d_name;
         rr.qtype = i.first.d_type;
         rr.ttl = i.first.d_ttl;
-        rr.content = i.first.d_content->getZoneRepresentation(true);
+        rr.content = i.first.getContent()->getZoneRepresentation(true);
         result->push_back(rr);
       }
 
@@ -271,29 +272,29 @@ bool Resolver::tryGetSOASerial(DNSName *domain, ComboAddress* remote, uint32_t *
   *domain = mdp.d_qname;
 
   if(domain->empty())
-    throw ResolverException("SOA query to '" + remote->toStringWithPort() + "' produced response without domain name (RCode: " + RCode::to_s(mdp.d_header.rcode) + ")");
+    throw ResolverException("SOA query to '" + remote->toLogString() + "' produced response without domain name (RCode: " + RCode::to_s(mdp.d_header.rcode) + ")");
 
   if(mdp.d_answers.empty())
-    throw ResolverException("Query to '" + remote->toStringWithPort() + "' for SOA of '" + domain->toLogString() + "' produced no results (RCode: " + RCode::to_s(mdp.d_header.rcode) + ")");
+    throw ResolverException("Query to '" + remote->toLogString() + "' for SOA of '" + domain->toLogString() + "' produced no results (RCode: " + RCode::to_s(mdp.d_header.rcode) + ")");
 
   if(mdp.d_qtype != QType::SOA)
-    throw ResolverException("Query to '" + remote->toStringWithPort() + "' for SOA of '" + domain->toLogString() + "' returned wrong record type");
+    throw ResolverException("Query to '" + remote->toLogString() + "' for SOA of '" + domain->toLogString() + "' returned wrong record type");
 
   if(mdp.d_header.rcode != 0)
-    throw ResolverException("Query to '" + remote->toStringWithPort() + "' for SOA of '" + domain->toLogString() + "' returned Rcode " + RCode::to_s(mdp.d_header.rcode));
+    throw ResolverException("Query to '" + remote->toLogString() + "' for SOA of '" + domain->toLogString() + "' returned Rcode " + RCode::to_s(mdp.d_header.rcode));
 
   *theirInception = *theirExpire = 0;
   bool gotSOA=false;
   for(const MOADNSParser::answers_t::value_type& drc :  mdp.d_answers) {
     if(drc.first.d_type == QType::SOA && drc.first.d_name == *domain) {
-      shared_ptr<SOARecordContent> src=getRR<SOARecordContent>(drc.first);
+      auto src = getRR<SOARecordContent>(drc.first);
       if (src) {
-        *theirSerial=src->d_st.serial;
+        *theirSerial = src->d_st.serial;
         gotSOA = true;
       }
     }
     if(drc.first.d_type == QType::RRSIG && drc.first.d_name == *domain) {
-      shared_ptr<RRSIGRecordContent> rrc=getRR<RRSIGRecordContent>(drc.first);
+      auto rrc = getRR<RRSIGRecordContent>(drc.first);
       if(rrc && rrc->d_type == QType::SOA) {
         *theirInception= std::max(*theirInception, rrc->d_siginception);
         *theirExpire = std::max(*theirExpire, rrc->d_sigexpire);
@@ -301,7 +302,7 @@ bool Resolver::tryGetSOASerial(DNSName *domain, ComboAddress* remote, uint32_t *
     }
   }
   if(!gotSOA)
-    throw ResolverException("Query to '" + remote->toString() + "' for SOA of '" + domain->toLogString() + "' did not return a SOA");
+    throw ResolverException("Query to '" + remote->toLogString() + "' for SOA of '" + domain->toLogString() + "' did not return a SOA");
   return true;
 }
 
@@ -327,7 +328,7 @@ int Resolver::resolve(const ComboAddress& to, const DNSName &domain, int type, R
       throw ResolverException("recvfrom error waiting for answer: "+stringerror());
 
     if (from != to) {
-      throw ResolverException("Got answer from the wrong peer while resolving ('"+from.toStringWithPort()+"' instead of '"+to.toStringWithPort()+"', discarding");
+      throw ResolverException("Got answer from the wrong peer while resolving ('"+from.toLogString()+"' instead of '"+to.toLogString()+"', discarding");
     }
 
     MOADNSParser mdp(false, buffer, len);

@@ -19,9 +19,6 @@ connector.
 Important notices
 -----------------
 
-Please do not use remotebackend shipped before version 3.3. This version
-has severe bug that can crash the entire process.
-
 There is a breaking change on v4.0 and later. Before version 4.0, the
 DNS names passed in queries were without trailing dot, after version 4.0
 the DNS names are sent with trailing dot. F.ex. example.org is now sent
@@ -1524,7 +1521,7 @@ Response:
 
 Get DomainInfo records for all domains in your backend.
 
--  Mandatory: no
+-  Mandatory: unless the zone cache has been disabled by setting :ref:`setting-zone-cache-refresh-interval` to ``0`` (not recommended for performance reasons)(since 4.5.0)
 -  Parameters: include_disabled
 -  Reply: array of DomainInfo
 

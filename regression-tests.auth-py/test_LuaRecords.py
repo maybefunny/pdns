@@ -43,6 +43,7 @@ edns-subnet-processing=yes
 launch=bind geoip
 any-to-tcp=no
 enable-lua-records
+lua-records-insert-whitespace=yes
 lua-health-checks-interval=1
 """
 
@@ -60,6 +61,7 @@ web3.example.org.            3600 IN A    {prefix}.103
 
 all.ifportup                 3600 IN LUA  A     "ifportup(8080, {{'{prefix}.101', '{prefix}.102'}})"
 some.ifportup                3600 IN LUA  A     "ifportup(8080, {{'192.168.42.21', '{prefix}.102'}})"
+multi.ifportup               3600 IN LUA  A     "ifportup(8080, {{ {{'192.168.42.23'}}, {{'192.168.42.21', '{prefix}.102'}}, {{'{prefix}.101'}} }})"
 none.ifportup                3600 IN LUA  A     "ifportup(8080, {{'192.168.42.21', '192.168.21.42'}})"
 all.noneup.ifportup          3600 IN LUA  A     "ifportup(8080, {{'192.168.42.21', '192.168.21.42'}}, {{ backupSelector='all' }})"
 
@@ -67,7 +69,10 @@ hashed.example.org.          3600 IN LUA  A     "pickhashed({{ '1.2.3.4', '4.3.2
 hashed-v6.example.org.       3600 IN LUA  AAAA  "pickhashed({{ '2001:db8:a0b:12f0::1', 'fe80::2a1:9bff:fe9b:f268' }})"
 hashed-txt.example.org.      3600 IN LUA  TXT   "pickhashed({{ 'bob', 'alice' }})"
 whashed.example.org.         3600 IN LUA  A     "pickwhashed({{ {{15, '1.2.3.4'}}, {{42, '4.3.2.1'}} }})"
+*.namehashed.example.org.    3600 IN LUA  A     "picknamehashed({{ {{15, '1.2.3.4'}}, {{42, '4.3.2.1'}} }})"
 whashed-txt.example.org.     3600 IN LUA  TXT   "pickwhashed({{ {{15, 'bob'}}, {{42, 'alice'}} }})"
+chashed.example.org.         3600 IN LUA  A     "pickchashed({{ {{15, '1.2.3.4'}}, {{42, '4.3.2.1'}} }})"
+chashed-txt.example.org.     3600 IN LUA  TXT   "pickchashed({{ {{15, 'bob'}}, {{42, 'alice'}} }})"
 rand.example.org.            3600 IN LUA  A     "pickrandom({{'{prefix}.101', '{prefix}.102'}})"
 rand-txt.example.org.        3600 IN LUA  TXT   "pickrandom({{ 'bob', 'alice' }})"
 randn-txt.example.org.       3600 IN LUA  TXT   "pickrandomsample( 2, {{ 'bob', 'alice', 'john' }} )"
@@ -83,20 +88,20 @@ all.example.org.             3600 IN LUA  A     "all({{'1.2.3.4','4.3.2.1'}})"
 config    IN    LUA    LUA ("settings={{stringmatch='Programming in Lua'}} "
                             "EUWips={{'{prefix}.101','{prefix}.102'}}      "
                             "EUEips={{'192.168.42.101','192.168.42.102'}}  "
-                            "NLips={{'{prefix}.111', '{prefix}.112'}}  "
-                            "USAips={{'{prefix}.103'}}                     ")
+                            "NLips={{'{prefix}.111', '{prefix}.112'}}      "
+                            "USAips={{'{prefix}.103', '192.168.42.105'}}   ")
 
 usa          IN    LUA    A   ( ";include('config')                         "
                                 "return ifurlup('http://www.lua.org:8080/', "
-                                "{{USAips, EUEips}}, settings)              ")
+                                "USAips, settings)                          ")
+
+usa-ext      IN    LUA    A   ( ";include('config')                         "
+                                "return ifurlup('http://www.lua.org:8080/', "
+                                "{{EUEips, USAips}}, settings)              ")
 
 mix.ifurlup  IN    LUA    A   ("ifurlup('http://www.other.org:8080/ping.json', "
                                "{{ '192.168.42.101', '{prefix}.101' }},        "
                                "{{ stringmatch='pong' }})                      ")
-
-eu-west      IN    LUA    A   ( ";include('config')                         "
-                                "return ifurlup('http://www.lua.org:8080/', "
-                                "{{EUWips, EUEips, USAips}}, settings)      ")
 
 ifurlextup   IN    LUA    A   "ifurlextup({{{{['192.168.0.1']='http://{prefix}.101:8080/404',['192.168.0.2']='http://{prefix}.102:8080/404'}}, {{['192.168.0.3']='http://{prefix}.101:8080/'}}}})"
 
@@ -140,6 +145,8 @@ any              IN           TXT "hello there"
 
 resolve          IN    LUA    A   ";local r=resolve('localhost', 1) local t={{}} for _,v in ipairs(r) do table.insert(t, v:toString()) end return t"
 
+filterforwardempty IN LUA A "filterForward('192.0.2.1', newNMG{{'192.1.2.0/24'}}, '')"
+
 *.createforward  IN    LUA    A     "filterForward(createForward(), newNMG{{'1.0.0.0/8', '64.0.0.0/8'}})"
 *.createreverse  IN    LUA    PTR   "createReverse('%5%.example.com', {{['10.10.10.10'] = 'quad10.example.com.'}})"
 *.createreverse6 IN    LUA    PTR   "createReverse6('%33%.example.com', {{['2001:db8::1'] = 'example.example.com.'}})"
@@ -148,6 +155,11 @@ newcafromraw     IN    LUA    A    "newCAFromRaw('ABCD'):toString()"
 newcafromraw     IN    LUA    AAAA "newCAFromRaw('ABCD020340506070'):toString()"
 
 counter          IN    LUA    TXT  ";counter = counter or 0 counter=counter+1 return tostring(counter)"
+
+lookmeup         IN           A  192.0.2.5
+dblookup         IN    LUA    A  "dblookup('lookmeup.example.org', pdns.A)[1]"
+
+whitespace       IN    LUA    TXT "'foo" "bar'"
         """,
         'createforward6.example.org': """
 createforward6.example.org.                 3600 IN SOA  {soa}
@@ -327,6 +339,33 @@ createforward6.example.org.                 3600 IN NS   ns2.example.org.
         self.assertRcodeEqual(res, dns.rcode.NOERROR)
         self.assertAnyRRsetInAnswer(res, expected)
 
+    def testIfportupWithSomeDownMultiset(self):
+        """
+        Basic ifportup() test with some ports DOWN from multiple sets
+        """
+        query = dns.message.make_query('multi.ifportup.example.org', 'A')
+        expected = [
+            dns.rrset.from_text('multi.ifportup.example.org.', 0, dns.rdataclass.IN, 'A',
+                                '192.168.42.21'),
+            dns.rrset.from_text('multi.ifportup.example.org.', 0, dns.rdataclass.IN, 'A',
+                                '192.168.42.23'),
+            dns.rrset.from_text('multi.ifportup.example.org.', 0, dns.rdataclass.IN, 'A',
+                                '{prefix}.102'.format(prefix=self._PREFIX)),
+            dns.rrset.from_text('multi.ifportup.example.org.', 0, dns.rdataclass.IN, 'A',
+                                '{prefix}.101'.format(prefix=self._PREFIX))
+        ]
+
+        # we first expect any of the IPs as no check has been performed yet
+        res = self.sendUDPQuery(query)
+        self.assertRcodeEqual(res, dns.rcode.NOERROR)
+        self.assertAnyRRsetInAnswer(res, expected)
+
+        # An ip is up in 2 sets, but we expect only the one from the middle set
+        expected = [expected[2]]
+        res = self.sendUDPQuery(query)
+        self.assertRcodeEqual(res, dns.rcode.NOERROR)
+        self.assertAnyRRsetInAnswer(res, expected)
+
     def testIfportupWithAllDown(self):
         """
         Basic ifportup() test with all ports DOWN
@@ -359,7 +398,7 @@ createforward6.example.org.                 3600 IN NS   ns2.example.org.
         res = self.sendUDPQuery(query)
         self.assertRcodeEqual(res, dns.rcode.NOERROR)
 
-        time.sleep(2)
+        time.sleep(3)
         res = self.sendUDPQuery(query)
         self.assertRcodeEqual(res, dns.rcode.NOERROR)
         self.assertEqual(res.answer, expected)
@@ -371,7 +410,7 @@ createforward6.example.org.                 3600 IN NS   ns2.example.org.
         reachable = [
             '{prefix}.103'.format(prefix=self._PREFIX)
         ]
-        unreachable = ['192.168.42.101', '192.168.42.102']
+        unreachable = ['192.168.42.105']
         ips = reachable + unreachable
         all_rrs = []
         reachable_rrs = []
@@ -386,8 +425,36 @@ createforward6.example.org.                 3600 IN NS   ns2.example.org.
         self.assertRcodeEqual(res, dns.rcode.NOERROR)
         self.assertAnyRRsetInAnswer(res, all_rrs)
 
-        # the timeout in the LUA health checker is 1 second, so we make sure to wait slightly longer here
-        time.sleep(2)
+        # the timeout in the LUA health checker is 2 second, so we make sure to wait slightly longer here
+        time.sleep(3)
+        res = self.sendUDPQuery(query)
+        self.assertRcodeEqual(res, dns.rcode.NOERROR)
+        self.assertAnyRRsetInAnswer(res, reachable_rrs)
+
+    def testIfurlupMultiSet(self):
+        """
+        Basic ifurlup() test with mutiple sets
+        """
+        reachable = [
+            '{prefix}.103'.format(prefix=self._PREFIX)
+        ]
+        unreachable = ['192.168.42.101', '192.168.42.102', '192.168.42.105']
+        ips = reachable + unreachable
+        all_rrs = []
+        reachable_rrs = []
+        for ip in ips:
+            rr = dns.rrset.from_text('usa-ext.example.org.', 0, dns.rdataclass.IN, 'A', ip)
+            all_rrs.append(rr)
+            if ip in reachable:
+                reachable_rrs.append(rr)
+
+        query = dns.message.make_query('usa-ext.example.org', 'A')
+        res = self.sendUDPQuery(query)
+        self.assertRcodeEqual(res, dns.rcode.NOERROR)
+        self.assertAnyRRsetInAnswer(res, all_rrs)
+
+        # the timeout in the LUA health checker is 2 second, so we make sure to wait slightly longer here
+        time.sleep(3)
         res = self.sendUDPQuery(query)
         self.assertRcodeEqual(res, dns.rcode.NOERROR)
         self.assertAnyRRsetInAnswer(res, reachable_rrs)
@@ -429,7 +496,7 @@ createforward6.example.org.                 3600 IN NS   ns2.example.org.
         self.assertRcodeEqual(res, dns.rcode.NOERROR)
         self.assertAnyRRsetInAnswer(res, all_rrs)
 
-        time.sleep(2)
+        time.sleep(3)
         res = self.sendUDPQuery(query)
         self.assertRcodeEqual(res, dns.rcode.NOERROR)
         self.assertAnyRRsetInAnswer(res, reachable_rrs)
@@ -717,39 +784,66 @@ createforward6.example.org.                 3600 IN NS   ns2.example.org.
         self.assertRcodeEqual(res, dns.rcode.SERVFAIL)
         self.assertAnswerEmpty(res)
 
-    def testWHashed(self):
+    def testCWHashed(self):
         """
-        Basic pickwhashed() test with a set of A records
+        Basic pickwhashed() and pickchashed() test with a set of A records
         As the `bestwho` is hashed, we should always get the same answer
         """
-        expected = [dns.rrset.from_text('whashed.example.org.', 0, dns.rdataclass.IN, 'A', '1.2.3.4'),
-                    dns.rrset.from_text('whashed.example.org.', 0, dns.rdataclass.IN, 'A', '4.3.2.1')]
-        query = dns.message.make_query('whashed.example.org', 'A')
+        for qname in ['whashed.example.org.', 'chashed.example.org.']:
+            expected = [dns.rrset.from_text(qname, 0, dns.rdataclass.IN, 'A', '1.2.3.4'),
+                        dns.rrset.from_text(qname, 0, dns.rdataclass.IN, 'A', '4.3.2.1')]
+            query = dns.message.make_query(qname, 'A')
 
-        first = self.sendUDPQuery(query)
-        self.assertRcodeEqual(first, dns.rcode.NOERROR)
-        self.assertAnyRRsetInAnswer(first, expected)
-        for _ in range(5):
-            res = self.sendUDPQuery(query)
+            first = self.sendUDPQuery(query)
+            self.assertRcodeEqual(first, dns.rcode.NOERROR)
+            self.assertAnyRRsetInAnswer(first, expected)
+            for _ in range(5):
+                res = self.sendUDPQuery(query)
+                self.assertRcodeEqual(res, dns.rcode.NOERROR)
+                self.assertRRsetInAnswer(res, first.answer[0])
+
+    def testNamehashed(self):
+        """
+        Basic picknamehashed() test with a set of A records
+        As the name is hashed, we should always get the same IP back for the same record name.
+        """
+
+        queries = [
+            {
+                'query': dns.message.make_query('test.namehashed.example.org', 'A'),
+                'expected': dns.rrset.from_text('test.namehashed.example.org.', 0,
+                                       dns.rdataclass.IN, 'A',
+                                       '1.2.3.4'),
+            },
+            {
+                'query': dns.message.make_query('test2.namehashed.example.org', 'A'),
+                'expected': dns.rrset.from_text('test2.namehashed.example.org.', 0,
+                                       dns.rdataclass.IN, 'A',
+                                       '4.3.2.1'),
+            }
+        ]
+        for query in queries :
+            res = self.sendUDPQuery(query['query'])
             self.assertRcodeEqual(res, dns.rcode.NOERROR)
-            self.assertRRsetInAnswer(res, first.answer[0])
+            self.assertRRsetInAnswer(res, query['expected'])
 
-    def testWHashedTxt(self):
+    def testCWHashedTxt(self):
         """
         Basic pickwhashed() test with a set of TXT records
         As the `bestwho` is hashed, we should always get the same answer
         """
-        expected = [dns.rrset.from_text('whashed-txt.example.org.', 0, dns.rdataclass.IN, 'TXT', 'bob'),
-                    dns.rrset.from_text('whashed-txt.example.org.', 0, dns.rdataclass.IN, 'TXT', 'alice')]
-        query = dns.message.make_query('whashed-txt.example.org', 'TXT')
+        for qname in ['whashed-txt.example.org.', 'chashed-txt.example.org.']:
+            expected = [dns.rrset.from_text(qname, 0, dns.rdataclass.IN, 'TXT', 'bob'),
+                        dns.rrset.from_text(qname, 0, dns.rdataclass.IN, 'TXT', 'alice')]
+            query = dns.message.make_query(qname,'TXT')
 
-        first = self.sendUDPQuery(query)
-        self.assertRcodeEqual(first, dns.rcode.NOERROR)
-        self.assertAnyRRsetInAnswer(first, expected)
-        for _ in range(5):
-            res = self.sendUDPQuery(query)
-            self.assertRcodeEqual(res, dns.rcode.NOERROR)
-            self.assertRRsetInAnswer(res, first.answer[0])
+            first = self.sendUDPQuery(query)
+            self.assertRcodeEqual(first, dns.rcode.NOERROR)
+            self.assertAnyRRsetInAnswer(first, expected)
+            for _ in range(5):
+                res = self.sendUDPQuery(query)
+                self.assertRcodeEqual(res, dns.rcode.NOERROR)
+                self.assertRRsetInAnswer(res, first.answer[0])
 
     def testHashed(self):
         """
@@ -888,6 +982,18 @@ createforward6.example.org.                 3600 IN NS   ns2.example.org.
         self.assertRcodeEqual(res, dns.rcode.NOERROR)
         self.assertEqual(res.answer, response.answer)
 
+    def testFilterForwardEmpty(self):
+        """
+        Test filterForward() function with empty fallback
+        """
+        name = 'filterforwardempty.example.org.'
+
+        query = dns.message.make_query(name, 'A')
+
+        res = self.sendUDPQuery(query)
+        self.assertRcodeEqual(res, dns.rcode.NOERROR)
+        self.assertEqual(res.answer, [])
+
     def testCreateForwardAndReverse(self):
         expected = {
             ".createforward.example.org." : (dns.rdatatype.A, {
@@ -903,9 +1009,12 @@ createforward6.example.org.                 3600 IN NS   ns2.example.org.
                 "1-2-3-4.foo.bar.baz.quux": "0.0.0.0",
                 "ip-1-2-3-4": "1.2.3.4",
                 "ip-is-here-for-you-1-2-3-4": "1.2.3.4",
+                "40414243": "64.65.66.67",
+                "p40414243": "64.65.66.67",
                 "ip40414243": "64.65.66.67",
-                "ipp40414243": "0.0.0.0",
+                "ipp40414243": "64.65.66.67",
                 "ip4041424": "0.0.0.0",
+                "host64-22-33-44": "64.22.33.44",
                 "2.2.2.2": "0.0.0.0"   # filtered
             }),
             ".createreverse.example.org." : (dns.rdatatype.PTR, {
@@ -914,6 +1023,8 @@ createforward6.example.org.                 3600 IN NS   ns2.example.org.
             }),
             ".createforward6.example.org." : (dns.rdatatype.AAAA, {
                 "2001--db8" : "2001::db8",
+                "20010002000300040005000600070db8" : "2001:2:3:4:5:6:7:db8",
+                "blabla20010002000300040005000600070db8" : "2001:2:3:4:5:6:7:db8",
                 "4000-db8--1" : "fe80::1"   # filtered, with fallback address override
             }),
             ".createreverse6.example.org." : (dns.rdatatype.PTR, {
@@ -965,6 +1076,40 @@ createforward6.example.org.                 3600 IN NS   ns2.example.org.
         self.assertEqual(len(resUDP), 1)
         self.assertEqual(len(resTCP), 1)
 
+    def testDblookup(self):
+        """
+        Test dblookup() function
+        """
+
+        name = 'dblookup.example.org.'
+
+        query = dns.message.make_query(name, 'A')
+
+        response = dns.message.make_response(query)
+
+        response.answer.append(dns.rrset.from_text(name, 0, dns.rdataclass.IN, 'A', '192.0.2.5'))
+
+        res = self.sendUDPQuery(query)
+        self.assertRcodeEqual(res, dns.rcode.NOERROR)
+        self.assertEqual(self.sortRRsets(res.answer), self.sortRRsets(response.answer))
+
+    def testWhitespace(self, expectws=True):
+        """
+        Test TXT query for whitespace
+        """
+        name = 'whitespace.example.org.'
+
+        query = dns.message.make_query(name, 'TXT')
+
+        response = dns.message.make_response(query)
+
+        response.answer.append(dns.rrset.from_text(name, 0, dns.rdataclass.IN, dns.rdatatype.TXT, '"foo   bar"' if expectws else '"foobar"'))
+
+        res = self.sendUDPQuery(query)
+        self.assertRcodeEqual(res, dns.rcode.NOERROR)
+        self.assertEqual(res.answer, response.answer)
+
+
 class TestLuaRecordsShared(TestLuaRecords):
     _config_template = """
 geoip-database-files=../modules/geoipbackend/regression-tests/GeoLiteCity.mmdb
@@ -972,6 +1117,7 @@ edns-subnet-processing=yes
 launch=bind geoip
 any-to-tcp=no
 enable-lua-records=shared
+lua-records-insert-whitespace=yes
 lua-health-checks-interval=1
 """
 
@@ -985,6 +1131,20 @@ lua-health-checks-interval=1
 
         self.assertEqual(len(resUDP), 50)
         self.assertEqual(len(resTCP), 50)
+
+class TestLuaRecordsNoWhiteSpace(TestLuaRecords):
+    _config_template = """
+geoip-database-files=../modules/geoipbackend/regression-tests/GeoLiteCity.mmdb
+edns-subnet-processing=yes
+launch=bind geoip
+any-to-tcp=no
+enable-lua-records
+lua-records-insert-whitespace=no
+lua-health-checks-interval=1
+"""
+
+    def testWhitespace(self):
+        return TestLuaRecords.testWhitespace(self, False)
 
 if __name__ == '__main__':
     unittest.main()

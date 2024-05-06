@@ -23,7 +23,7 @@
 #include "config.h"
 #endif
 #include <cstdio>
-#include <signal.h>
+#include <csignal>
 #include <cstring>
 #include <cstdlib>
 #include <sys/types.h>
@@ -37,7 +37,7 @@
 #include <sys/resource.h>
 #include <sys/time.h>
 #include <sys/wait.h>
-#include <errno.h>
+#include <cerrno>
 #include <pthread.h>
 #include <thread>
 #include <unistd.h>
@@ -53,6 +53,7 @@
 #endif
 
 #include "auth-main.hh"
+#include "coverage.hh"
 #include "secpoll-auth.hh"
 #include "dynhandler.hh"
 #include "dnsseckeeper.hh"
@@ -88,16 +89,17 @@
 #include "minicurl.hh"
 #endif /* HAVE_LUA_RECORDS */
 
-time_t s_starttime;
+time_t g_starttime;
 
-string s_programname = "pdns"; // used in packethandler.cc
+string g_programname = "pdns"; // used in packethandler.cc
 
 const char* funnytext = "*****************************************************************************\n"
-                        "Ok, you just ran pdns_server through 'strings' hoping to find funny messages.\n"
-                        "Well, you found one. \n"
-                        "Two ions are flying through their particle accelerator, says the one to the\n"
-                        "other 'I think I've lost an electron!' \n"
-                        "So the other one says, 'Are you sure?'. 'YEAH! I'M POSITIVE!'\n"
+                        "Ok, you just ran pdns-auth through 'strings' hoping to find funny messages.  \n"
+                        "Well, you found one.                                                         \n"
+                        "Two ions are flying through their particle accelerator, says the one to the  \n"
+                        "other 'I think I've lost an electron!'                                       \n"
+                        "So the other one says, 'Are you sure?'. 'YEAH! I'M POSITIVE!'                \n"
+                        "                                                                             \n"
                         "                                            the pdns crew - pdns@powerdns.com\n"
                         "*****************************************************************************\n";
 
@@ -108,6 +110,11 @@ bool g_doLuaRecord;
 int g_luaRecordExecLimit;
 time_t g_luaHealthChecksInterval{5};
 time_t g_luaHealthChecksExpireDelay{3600};
+time_t g_luaConsistentHashesExpireDelay{86400};
+time_t g_luaConsistentHashesCleanupInterval{3600};
+#endif
+#ifdef ENABLE_GSS_TSIG
+bool g_doGssTSIG;
 #endif
 typedef Distributor<DNSPacket, DNSPacket, PacketHandler> DNSDistributor;
 
@@ -117,24 +124,22 @@ AuthPacketCache PC; //!< This is the main PacketCache, shared across all threads
 AuthQueryCache QC;
 AuthZoneCache g_zoneCache;
 std::unique_ptr<DNSProxy> DP{nullptr};
-std::unique_ptr<DynListener> dl{nullptr};
+static std::unique_ptr<DynListener> s_dynListener{nullptr};
 CommunicatorClass Communicator;
-shared_ptr<UDPNameserver> N;
-double avg_latency{0.0}, receive_latency{0.0}, cache_latency{0.0}, backend_latency{0.0}, send_latency{0.0};
-unique_ptr<TCPNameserver> TN;
-static vector<DNSDistributor*> g_distributors;
-vector<std::shared_ptr<UDPNameserver>> g_udpReceivers;
+static double avg_latency{0.0}, receive_latency{0.0}, cache_latency{0.0}, backend_latency{0.0}, send_latency{0.0};
+static unique_ptr<TCPNameserver> s_tcpNameserver{nullptr};
+static vector<DNSDistributor*> s_distributors;
+static shared_ptr<UDPNameserver> s_udpNameserver{nullptr};
+static vector<std::shared_ptr<UDPNameserver>> s_udpReceivers;
 NetmaskGroup g_proxyProtocolACL;
 size_t g_proxyProtocolMaximumSize;
-
-void mainthread();
 
 ArgvMap& arg()
 {
   return theArg;
 }
 
-void declareArguments()
+static void declareArguments()
 {
   ::arg().set("config-dir", "Location of configuration directory (pdns.conf)") = SYSCONFDIR;
   ::arg().set("config-name", "Name of this virtual configuration - will rename the binary image") = "";
@@ -159,13 +164,13 @@ void declareArguments()
   ::arg().setSwitch("dnsupdate", "Enable/Disable DNS update (RFC2136) support. Default is no.") = "no";
   ::arg().setSwitch("write-pid", "Write a PID file") = "yes";
   ::arg().set("allow-dnsupdate-from", "A global setting to allow DNS updates from these IP ranges.") = "127.0.0.0/8,::1";
+  ::arg().setSwitch("dnsupdate-require-tsig", "Require TSIG secured DNS updates. Default is no.") = "no";
   ::arg().set("proxy-protocol-from", "A Proxy Protocol header is only allowed from these subnets, and is mandatory then too.") = "";
   ::arg().set("proxy-protocol-maximum-size", "The maximum size of a proxy protocol payload, including the TLV values") = "512";
   ::arg().setSwitch("send-signed-notify", "Send TSIG secured NOTIFY if TSIG key is configured for a zone") = "yes";
   ::arg().set("allow-unsigned-notify", "Allow unsigned notifications for TSIG secured zones") = "yes"; // FIXME: change to 'no' later
-  ::arg().set("allow-unsigned-supermaster", "Allow supermasters to create zones without TSIG signed NOTIFY") = "yes";
   ::arg().set("allow-unsigned-autoprimary", "Allow autoprimaries to create zones without TSIG signed NOTIFY") = "yes";
-  ::arg().setSwitch("forward-dnsupdate", "A global setting to allow DNS update packages that are for a Slave zone, to be forwarded to the master.") = "yes";
+  ::arg().setSwitch("forward-dnsupdate", "A global setting to allow DNS update packages that are for a Secondary zone, to be forwarded to the primary.") = "yes";
   ::arg().setSwitch("log-dns-details", "If PDNS should log DNS non-erroneous details") = "no";
   ::arg().setSwitch("log-dns-queries", "If PDNS should log all incoming DNS queries") = "no";
   ::arg().set("local-address", "Local IP addresses to which we bind") = "0.0.0.0, ::";
@@ -176,7 +181,7 @@ void declareArguments()
   ::arg().set("overload-queue-length", "Maximum queuelength moving to packetcache only") = "0";
   ::arg().set("max-queue-length", "Maximum queuelength before considering situation lost") = "5000";
 
-  ::arg().set("retrieval-threads", "Number of AXFR-retrieval threads for slave operation") = "2";
+  ::arg().set("retrieval-threads", "Number of AXFR-retrieval threads for secondary operation") = "2";
   ::arg().setSwitch("api", "Enable/disable the REST API (including HTTP listener)") = "no";
   ::arg().set("api-key", "Static pre-shared authentication key for access to the REST API") = "";
   ::arg().setSwitch("default-api-rectify", "Default API-RECTIFY value for zones") = "yes";
@@ -191,10 +196,12 @@ void declareArguments()
   ::arg().set("version-string", "PowerDNS version in packets - full, anonymous, powerdns or custom") = "full";
   ::arg().set("control-console", "Debugging switch - don't use") = "no"; // but I know you will!
   ::arg().set("loglevel", "Amount of logging. Higher is more. Do not set below 3") = "4";
-  ::arg().set("disable-syslog", "Disable logging to syslog, useful when running inside a supervisor that logs stdout") = "no";
+  ::arg().setSwitch("loglevel-show", "Include log level indicator in log output") = "no";
+  ::arg().set("disable-syslog", "Disable logging to syslog, useful when running inside a supervisor that logs stderr") = "no";
   ::arg().set("log-timestamp", "Print timestamps in log lines") = "yes";
   ::arg().set("distributor-threads", "Default number of Distributor (backend) threads to start") = "3";
   ::arg().set("signing-threads", "Default number of signer threads to start") = "3";
+  ::arg().setSwitch("workaround-11804", "Workaround for issue 11804: send single RR per AXFR chunk") = "no";
   ::arg().set("receiver-threads", "Default number of receiver threads to start") = "1";
   ::arg().set("queue-limit", "Maximum number of milliseconds to queue a query") = "1500";
   ::arg().set("resolver", "Use this resolver for ALIAS and the internal stub resolver") = "no";
@@ -209,25 +216,23 @@ void declareArguments()
   ::arg().set("only-notify", "Only send AXFR NOTIFY to these IP addresses or netmasks") = "0.0.0.0/0,::/0";
   ::arg().set("also-notify", "When notifying a zone, also notify these nameservers") = "";
   ::arg().set("allow-notify-from", "Allow AXFR NOTIFY from these IP ranges. If empty, drop all incoming notifies.") = "0.0.0.0/0,::/0";
-  ::arg().set("slave-cycle-interval", "Schedule slave freshness checks once every .. seconds") = "60";
   ::arg().set("xfr-cycle-interval", "Schedule primary/secondary SOA freshness checks once every .. seconds") = "60";
+  ::arg().set("secondary-check-signature-freshness", "Check signatures in SOA freshness check. Sets DO flag on SOA queries. Outside some very problematic scenarios, say yes here.") = "yes";
 
   ::arg().set("tcp-control-address", "If set, PowerDNS can be controlled over TCP on this address") = "";
   ::arg().set("tcp-control-port", "If set, PowerDNS can be controlled over TCP on this address") = "53000";
   ::arg().set("tcp-control-secret", "If set, PowerDNS can be controlled over TCP after passing this secret") = "";
   ::arg().set("tcp-control-range", "If set, remote control of PowerDNS is possible over these networks only") = "127.0.0.0/8, 10.0.0.0/8, 192.168.0.0/16, 172.16.0.0/12, ::1/128, fe80::/10";
 
-  ::arg().setSwitch("slave", "Act as a secondary") = "no";
   ::arg().setSwitch("secondary", "Act as a secondary") = "no";
-  ::arg().setSwitch("master", "Act as a primary") = "no";
   ::arg().setSwitch("primary", "Act as a primary") = "no";
-  ::arg().setSwitch("superslave", "Act as a autosecondary") = "no";
-  ::arg().setSwitch("autosecondary", "Act as an autosecondary (formerly superslave)") = "no";
+  ::arg().setSwitch("autosecondary", "Act as an autosecondary") = "no";
   ::arg().setSwitch("disable-axfr-rectify", "Disable the rectify step during an outgoing AXFR. Only required for regression testing.") = "no";
   ::arg().setSwitch("guardian", "Run within a guardian process") = "no";
   ::arg().setSwitch("prevent-self-notification", "Don't send notifications to what we think is ourself") = "yes";
   ::arg().setSwitch("any-to-tcp", "Answer ANY queries with tc=1, shunting to TCP") = "yes";
   ::arg().setSwitch("edns-subnet-processing", "If we should act on EDNS Subnet options") = "no";
+  ::arg().set("delay-notifications", "Configure a delay to send out notifications, no delay by default") = "0";
 
   ::arg().set("edns-cookie-secret", "When set, set a server cookie when responding to a query with a Client cookie (in hex)") = "";
 
@@ -262,9 +267,8 @@ void declareArguments()
   ::arg().set("zone-metadata-cache-ttl", "Seconds to cache zone metadata from the database") = "60";
 
   ::arg().set("trusted-notification-proxy", "IP address of incoming notification proxy") = "";
-  ::arg().set("slave-renotify", "If we should send out notifications for secondaried updates") = "no";
   ::arg().set("secondary-do-renotify", "If this secondary should send out notifications after receiving zone transfers from a primary") = "no";
-  ::arg().set("forward-notify", "IP addresses to forward received notifications to regardless of master or slave settings") = "";
+  ::arg().set("forward-notify", "IP addresses to forward received notifications to regardless of primary or secondary settings") = "";
 
   ::arg().set("default-ttl", "Seconds a result is valid if not set otherwise") = "3600";
   ::arg().set("max-tcp-connections", "Maximum number of TCP connections") = "20";
@@ -301,15 +305,18 @@ void declareArguments()
   ::arg().set("security-poll-suffix", "Zone name from which to query security update notifications") = "secpoll.powerdns.com.";
 
   ::arg().setSwitch("expand-alias", "Expand ALIAS records") = "no";
-  ::arg().setSwitch("outgoing-axfr-expand-alias", "Expand ALIAS records during outgoing AXFR") = "no";
+  ::arg().set("outgoing-axfr-expand-alias", "Expand ALIAS records during outgoing AXFR") = "no";
   ::arg().setSwitch("8bit-dns", "Allow 8bit dns queries") = "no";
 #ifdef HAVE_LUA_RECORDS
   ::arg().setSwitch("enable-lua-records", "Process LUA records for all zones (metadata overrides this)") = "no";
+  ::arg().setSwitch("lua-records-insert-whitespace", "Insert whitespace when combining LUA chunks") = "no";
   ::arg().set("lua-records-exec-limit", "LUA records scripts execution limit (instructions count). Values <= 0 mean no limit") = "1000";
   ::arg().set("lua-health-checks-expire-delay", "Stops doing health checks after the record hasn't been used for that delay (in seconds)") = "3600";
   ::arg().set("lua-health-checks-interval", "LUA records health checks monitoring interval in seconds") = "5";
+  ::arg().set("lua-consistent-hashes-cleanup-interval", "Pre-computed hashes cleanup interval (in seconds)") = "3600";
+  ::arg().set("lua-consistent-hashes-expire-delay", "Cleanup pre-computed hashes that haven't been used for the given delay (in seconds). See pickchashed() LUA function") = "86400";
 #endif
-  ::arg().setSwitch("axfr-lower-serial", "Also AXFR a zone from a master with a lower serial") = "no";
+  ::arg().setSwitch("axfr-lower-serial", "Also AXFR a zone from a primary with a lower serial") = "no";
 
   ::arg().set("lua-axfr-script", "Script to be used to edit incoming AXFRs") = "";
   ::arg().set("xfr-max-received-mbytes", "Maximum number of megabytes received from an incoming XFR") = "100";
@@ -325,11 +332,17 @@ void declareArguments()
   ::arg().setSwitch("consistent-backends", "Assume individual zones are not divided over backends. Send only ANY lookup operations to the backend to reduce the number of lookups") = "yes";
 
   ::arg().set("rng", "Specify the random number generator to use. Valid values are auto,sodium,openssl,getrandom,arc4random,urandom.") = "auto";
+
+  ::arg().set("default-catalog-zone", "Catalog zone to assign newly created primary zones (via the API) to") = "";
+
+#ifdef ENABLE_GSS_TSIG
+  ::arg().setSwitch("enable-gss-tsig", "Enable GSS TSIG processing") = "no";
+#endif
   ::arg().setDefaults();
 }
 
 static time_t s_start = time(nullptr);
-static uint64_t uptimeOfProcess(const std::string& str)
+static uint64_t uptimeOfProcess(const std::string& /* str */)
 {
   return time(nullptr) - s_start;
 }
@@ -346,15 +359,15 @@ static uint64_t getSysUserTimeMsec(const std::string& str)
     return (ru.ru_utime.tv_sec * 1000ULL + ru.ru_utime.tv_usec / 1000);
 }
 
-static uint64_t getTCPConnectionCount(const std::string& str)
+static uint64_t getTCPConnectionCount(const std::string& /* str */)
 {
-  return TN->numTCPConnections();
+  return s_tcpNameserver->numTCPConnections();
 }
 
-static uint64_t getQCount(const std::string& str)
+static uint64_t getQCount(const std::string& /* str */)
 try {
   int totcount = 0;
-  for (const auto& d : g_distributors) {
+  for (const auto& d : s_distributors) {
     if (!d)
       continue;
     totcount += d->getQueueSize(); // this does locking and other things, so don't get smart
@@ -370,32 +383,32 @@ catch (PDNSException& e) {
   return 0;
 }
 
-static uint64_t getLatency(const std::string& str)
+static uint64_t getLatency(const std::string& /* str */)
 {
   return round(avg_latency);
 }
 
-static uint64_t getReceiveLatency(const std::string& str)
+static uint64_t getReceiveLatency(const std::string& /* str */)
 {
   return round(receive_latency);
 }
 
-static uint64_t getCacheLatency(const std::string& str)
+static uint64_t getCacheLatency(const std::string& /* str */)
 {
   return round(cache_latency);
 }
 
-static uint64_t getBackendLatency(const std::string& str)
+static uint64_t getBackendLatency(const std::string& /* str */)
 {
   return round(backend_latency);
 }
 
-static uint64_t getSendLatency(const std::string& str)
+static uint64_t getSendLatency(const std::string& /* str */)
 {
   return round(send_latency);
 }
 
-void declareStats()
+static void declareStats()
 {
   S.declare("udp-queries", "Number of UDP queries received");
   S.declare("udp-do-queries", "Number of UDP queries received with DO bit");
@@ -484,7 +497,7 @@ void declareStats()
   S.declare(
     "xfr-queue", "Size of the queue of zones to be XFRd", [](const string&) { return Communicator.getSuckRequestsWaiting(); }, StatType::gauge);
   S.declareDNSNameQTypeRing("queries", "UDP Queries Received");
-  S.declareDNSNameQTypeRing("nxdomain-queries", "Queries for non-existent records within existent zones");
+  S.declareDNSNameQTypeRing("nxdomain-queries", "Queries for nonexistent records within existent zones");
   S.declareDNSNameQTypeRing("noerror-queries", "Queries for existing records, but for type we don't have");
   S.declareDNSNameQTypeRing("servfail-queries", "Queries that could not be answered due to backend errors");
   S.declareDNSNameQTypeRing("unauth-queries", "Queries for zones that we are not authoritative for");
@@ -494,7 +507,7 @@ void declareStats()
   S.declareComboRing("remotes-corrupt", "Remote hosts sending corrupt packets");
 }
 
-int isGuarded(char** argv)
+static int isGuarded(char** argv)
 {
   char* p = strstr(argv[0], "-instance");
 
@@ -511,7 +524,7 @@ static void sendout(std::unique_ptr<DNSPacket>& a, int start)
     backend_latency = 0.999 * backend_latency + 0.001 * std::max(diff - start, 0);
     start = diff;
 
-    N->send(*a);
+    s_udpNameserver->send(*a);
 
     diff = a->d_dt.udiff();
     send_latency = 0.999 * send_latency + 0.001 * std::max(diff - start, 0);
@@ -528,8 +541,8 @@ static void qthread(unsigned int num)
 try {
   setThreadName("pdns/receiver");
 
-  g_distributors[num] = DNSDistributor::Create(::arg().asNum("distributor-threads", 1));
-  DNSDistributor* distributor = g_distributors[num]; // the big dispatcher!
+  s_distributors[num] = DNSDistributor::Create(::arg().asNum("distributor-threads", 1));
+  DNSDistributor* distributor = s_distributors[num]; // the big dispatcher!
   DNSPacket question(true);
   DNSPacket cached(false);
 
@@ -550,14 +563,14 @@ try {
 
   // If we have SO_REUSEPORT then create a new port for all receiver threads
   // other than the first one.
-  if (N->canReusePort()) {
-    NS = g_udpReceivers[num];
+  if (s_udpNameserver->canReusePort()) {
+    NS = s_udpReceivers[num];
     if (NS == nullptr) {
-      NS = N;
+      NS = s_udpNameserver;
     }
   }
   else {
-    NS = N;
+    NS = s_udpNameserver;
   }
 
   for (;;) {
@@ -597,7 +610,7 @@ try {
         continue;
 
       S.ringAccount("queries", question.qdomain, question.qtype);
-      S.ringAccount("remotes", question.d_remote);
+      S.ringAccount("remotes", question.getInnerRemote());
       if (logDNSQueries) {
         g_log << Logger::Notice << "Remote " << question.getRemoteString() << " wants '" << question.qdomain << "|" << question.qtype << "', do = " << question.d_dnssecOk << ", bufsize = " << question.getMaxReplyLen();
         if (question.d_ednsRawPacketSizeLimit > 0 && question.getMaxReplyLen() != (unsigned int)question.d_ednsRawPacketSizeLimit)
@@ -677,10 +690,8 @@ static void triggerLoadOfLibraries()
   dummy.join();
 }
 
-void mainthread()
+static void mainthread()
 {
-  Utility::srandom();
-
   gid_t newgid = 0;
   if (!::arg()["setgid"].empty())
     newgid = strToGID(::arg()["setgid"]);
@@ -694,8 +705,14 @@ void mainthread()
   g_doLuaRecord = ::arg().mustDo("enable-lua-records");
   g_LuaRecordSharedState = (::arg()["enable-lua-records"] == "shared");
   g_luaRecordExecLimit = ::arg().asNum("lua-records-exec-limit");
+  g_luaRecordInsertWhitespace = ::arg().mustDo("lua-records-insert-whitespace");
   g_luaHealthChecksInterval = ::arg().asNum("lua-health-checks-interval");
+  g_luaConsistentHashesExpireDelay = ::arg().asNum("lua-consistent-hashes-expire-delay");
+  g_luaConsistentHashesCleanupInterval = ::arg().asNum("lua-consistent-hashes-cleanup-interval");
   g_luaHealthChecksExpireDelay = ::arg().asNum("lua-health-checks-expire-delay");
+#endif
+#ifdef ENABLE_GSS_TSIG
+  g_doGssTSIG = ::arg().mustDo("enable-gss-tsig");
 #endif
 
   DNSPacket::s_udpTruncationThreshold = std::max(512, ::arg().asNum("udp-truncation-threshold"));
@@ -732,6 +749,9 @@ void mainthread()
 
   if (!PC.enabled() && ::arg().mustDo("log-dns-queries")) {
     g_log << Logger::Warning << "Packet cache disabled, logging queries without HIT/MISS" << endl;
+  }
+  if (::arg()["outgoing-axfr-expand-alias"] == "ignore-errors") {
+    g_log << Logger::Error << "Ignoring ALIAS resolve failures on outgoing AXFR transfers, see option \"outgoing-axfr-expand-alias\"" << endl;
   }
 
   stubParseResolveConf();
@@ -816,19 +836,37 @@ void mainthread()
 
   pdns::parseTrustedNotificationProxy(::arg()["trusted-notification-proxy"]);
 
-  // NOW SAFE TO CREATE THREADS!
-  dl->go();
+  UeberBackend::go();
 
-  if (::arg().mustDo("webserver") || ::arg().mustDo("api"))
-    webserver.go();
+  // Setup the zone cache
+  g_zoneCache.setRefreshInterval(::arg().asNum("zone-cache-refresh-interval"));
+  try {
+    UeberBackend B;
+    B.updateZoneCache();
+  }
+  catch (PDNSException& e) {
+    g_log << Logger::Error << "PDNSException while filling the zone cache: " << e.reason << endl;
+    exit(1);
+  }
+  catch (std::exception& e) {
+    g_log << Logger::Error << "STL Exception while filling the zone cache: " << e.what() << endl;
+    exit(1);
+  }
+
+  // NOW SAFE TO CREATE THREADS!
+  s_dynListener->go();
+
+  if (::arg().mustDo("webserver") || ::arg().mustDo("api")) {
+    webserver.go(S);
+  }
 
   if (::arg().mustDo("primary") || ::arg().mustDo("secondary") || !::arg()["forward-notify"].empty())
     Communicator.go();
 
-  TN->go(); // tcp nameserver launch
+  s_tcpNameserver->go(); // tcp nameserver launch
 
   unsigned int max_rthreads = ::arg().asNum("receiver-threads", 1);
-  g_distributors.resize(max_rthreads);
+  s_distributors.resize(max_rthreads);
   for (unsigned int n = 0; n < max_rthreads; ++n) {
     std::thread t(qthread, n);
     t.detach();
@@ -900,7 +938,7 @@ static void daemonize()
 }
 
 static int cpid;
-static void takedown(int i)
+static void takedown(int /* i */)
 {
   if (cpid) {
     g_log << Logger::Error << "Guardian is killed, taking down children with us" << endl;
@@ -925,7 +963,7 @@ static void writePid()
     fname = ::arg()["chroot"] + ::arg()["socket-dir"];
   }
 
-  fname += +"/" + s_programname + ".pid";
+  fname += +"/" + g_programname + ".pid";
   ofstream of(fname.c_str());
   if (of)
     of << getpid() << endl;
@@ -938,7 +976,7 @@ static FILE* g_fp;
 static std::mutex g_guardian_lock;
 
 // The next two methods are not in dynhandler.cc because they use a few items declared in this file.
-static string DLCycleHandler(const vector<string>& parts, pid_t ppid)
+static string DLCycleHandler(const vector<string>& /* parts */, pid_t /* ppid */)
 {
   kill(cpid, SIGKILL); // why?
   kill(cpid, SIGKILL); // why?
@@ -946,7 +984,7 @@ static string DLCycleHandler(const vector<string>& parts, pid_t ppid)
   return "ok";
 }
 
-static string DLRestHandler(const vector<string>& parts, pid_t ppid)
+static string DLRestHandler(const vector<string>& parts, pid_t /* ppid */)
 {
   string line;
 
@@ -983,7 +1021,7 @@ static int guardian(int argc, char** argv)
 
   int infd = 0, outfd = 1;
 
-  DynListener dlg(s_programname);
+  DynListener dlg(g_programname);
   dlg.registerFunc("QUIT", &DLQuitHandler, "quit daemon");
   dlg.registerFunc("CYCLE", &DLCycleHandler, "restart instance");
   dlg.registerFunc("PING", &DLPingHandler, "ping guardian");
@@ -1088,7 +1126,7 @@ static int guardian(int argc, char** argv)
           // execute some kind of ping here
           if (DLQuitPlease())
             takedown(1); // needs a parameter..
-          setStatus("Child running on pid " + itoa(pid));
+          setStatus("Child running on pid " + std::to_string(pid));
           sleep(1);
         }
       }
@@ -1105,7 +1143,7 @@ static int guardian(int argc, char** argv)
           g_log << Logger::Error << "Child requested a stop, exiting" << endl;
           exit(1);
         }
-        setStatus("Child died with code " + itoa(ret));
+        setStatus("Child died with code " + std::to_string(ret));
         g_log << Logger::Error << "Our pdns instance exited with code " << ret << ", respawning" << endl;
 
         sleep(1);
@@ -1113,7 +1151,7 @@ static int guardian(int argc, char** argv)
       }
       if (WIFSIGNALED(status)) {
         int sig = WTERMSIG(status);
-        setStatus("Child died because of signal " + itoa(sig));
+        setStatus("Child died because of signal " + std::to_string(sig));
         g_log << Logger::Error << "Our pdns instance (" << pid << ") exited after signal " << sig << endl;
 #ifdef WCOREDUMP
         if (WCOREDUMP(status))
@@ -1154,14 +1192,22 @@ static void tbhandler(int num)
 }
 #endif
 
+#ifdef COVERAGE
+static void sigTermHandler([[maybe_unused]] int signal)
+{
+  pdns::coverage::dumpCoverageData();
+  _exit(EXIT_SUCCESS);
+}
+#endif /* COVERAGE */
+
 //! The main function of pdns, the pdns process
 int main(int argc, char** argv)
 {
   versionSetProduct(ProductAuthoritative);
   reportAllTypes(); // init MOADNSParser
 
-  s_programname = "pdns";
-  s_starttime = time(nullptr);
+  g_programname = "pdns";
+  g_starttime = time(nullptr);
 
 #if defined(__GLIBC__) && !defined(__UCLIBC__)
   signal(SIGSEGV, tbhandler);
@@ -1181,15 +1227,15 @@ int main(int argc, char** argv)
     if (::arg().mustDo("version")) {
       showProductVersion();
       showBuildConfiguration();
-      exit(99);
+      return 0;
     }
 
     if (::arg()["config-name"] != "")
-      s_programname += "-" + ::arg()["config-name"];
+      g_programname += "-" + ::arg()["config-name"];
 
-    g_log.setName(s_programname);
+    g_log.setName(g_programname);
 
-    string configname = ::arg()["config-dir"] + "/" + s_programname + ".conf";
+    string configname = ::arg()["config-dir"] + "/" + g_programname + ".conf";
     cleanSlashes(configname);
 
     if (::arg()["config"] != "default" && !::arg().mustDo("no-config")) // "config" == print a configuration file
@@ -1204,33 +1250,14 @@ int main(int argc, char** argv)
         g_log << Logger::Error << "Unknown logging facility " << ::arg().asNum("logging-facility") << endl;
     }
 
-    if (::arg().mustDo("master"))
-      ::arg().set("primary") = "yes";
-    if (::arg().mustDo("slave"))
-      ::arg().set("secondary") = "yes";
-    if (::arg().mustDo("slave-renotify"))
-      ::arg().set("secondary-do-renotify") = "yes";
-    if (::arg().mustDo("superslave"))
-      ::arg().set("autosecondary") = "yes";
-    if (::arg().mustDo("allow-unsigned-supermaster"))
-      ::arg().set("allow-unsigned-autoprimary") = "yes";
     if (!::arg().isEmpty("domain-metadata-cache-ttl"))
       ::arg().set("zone-metadata-cache-ttl") = ::arg()["domain-metadata-cache-ttl"];
 
     // this mirroring back is on purpose, so that config dumps reflect the actual setting on both names
-    if (::arg().mustDo("primary"))
-      ::arg().set("master") = "yes";
-    if (::arg().mustDo("secondary"))
-      ::arg().set("slave") = "yes";
-    if (::arg().mustDo("secondary-do-renotify"))
-      ::arg().set("slave-renotify") = "yes";
-    if (::arg().mustDo("autosecondary"))
-      ::arg().set("superslave") = "yes";
-    if (::arg().mustDo("allow-unsigned-autoprimary"))
-      ::arg().set("allow-unsigned-supermaster") = "yes";
     ::arg().set("domain-metadata-cache-ttl") = ::arg()["zone-metadata-cache-ttl"];
 
     g_log.setLoglevel((Logger::Urgency)(::arg().asNum("loglevel")));
+    g_log.setPrefixed(::arg().mustDo("loglevel-show"));
     g_log.disableSyslog(::arg().mustDo("disable-syslog"));
     g_log.setTimestamps(::arg().mustDo("log-timestamp"));
     g_log.toConsole((Logger::Urgency)(::arg().asNum("loglevel")));
@@ -1249,6 +1276,12 @@ int main(int argc, char** argv)
       // never get here, guardian will reinvoke process
       cerr << "Um, we did get here!" << endl;
     }
+
+#ifdef COVERAGE
+    if (!::arg().mustDo("guardian") && !::arg().mustDo("daemon")) {
+      signal(SIGTERM, sigTermHandler);
+    }
+#endif
 
     // we really need to do work - either standalone or as an instance
 
@@ -1271,8 +1304,6 @@ int main(int argc, char** argv)
 
     openssl_thread_setup();
     openssl_seed();
-    /* setup rng */
-    dns_random_init();
 
 #ifdef HAVE_LUA_RECORDS
     MiniCurl::init();
@@ -1365,15 +1396,15 @@ int main(int argc, char** argv)
 
     if (isGuarded(argv)) {
       g_log << Logger::Warning << "This is a guarded instance of pdns" << endl;
-      dl = make_unique<DynListener>(); // listens on stdin
+      s_dynListener = std::make_unique<DynListener>(); // listens on stdin
     }
     else {
       g_log << Logger::Warning << "This is a standalone pdns" << endl;
 
       if (::arg().mustDo("control-console"))
-        dl = make_unique<DynListener>();
+        s_dynListener = std::make_unique<DynListener>();
       else
-        dl = std::make_unique<DynListener>(s_programname);
+        s_dynListener = std::make_unique<DynListener>(g_programname);
 
       writePid();
     }
@@ -1392,7 +1423,7 @@ int main(int argc, char** argv)
     DynListener::registerFunc("RESPSIZES", &DLRSizesHandler, "get histogram of response sizes");
     DynListener::registerFunc("REMOTES", &DLRemotesHandler, "get top remotes");
     DynListener::registerFunc("SET", &DLSettingsHandler, "set config variables", "<var> <value>");
-    DynListener::registerFunc("RETRIEVE", &DLNotifyRetrieveHandler, "retrieve slave zone", "<zone> [<ip>]");
+    DynListener::registerFunc("RETRIEVE", &DLNotifyRetrieveHandler, "retrieve secondary zone", "<zone> [<ip>]");
     DynListener::registerFunc("CURRENT-CONFIG", &DLCurrentConfigHandler, "retrieve the current configuration", "[diff]");
     DynListener::registerFunc("LIST-ZONES", &DLListZones, "show list of zones", "[primary|secondary|native|consumer|producer]");
     DynListener::registerFunc("TOKEN-LOGIN", &DLTokenLogin, "Login to a PKCS#11 token", "<module> <slot> <pin>");
@@ -1418,24 +1449,16 @@ int main(int argc, char** argv)
       }
     }
 
-    UeberBackend::go();
-
-    g_zoneCache.setRefreshInterval(::arg().asNum("zone-cache-refresh-interval"));
-    {
-      UeberBackend B;
-      B.updateZoneCache();
-    }
-
-    N = std::make_shared<UDPNameserver>(); // this fails when we are not root, throws exception
-    g_udpReceivers.push_back(N);
+    s_udpNameserver = std::make_shared<UDPNameserver>(); // this fails when we are not root, throws exception
+    s_udpReceivers.push_back(s_udpNameserver);
 
     size_t rthreads = ::arg().asNum("receiver-threads", 1);
-    if (rthreads > 1 && N->canReusePort()) {
-      g_udpReceivers.resize(rthreads);
+    if (rthreads > 1 && s_udpNameserver->canReusePort()) {
+      s_udpReceivers.resize(rthreads);
 
       for (size_t idx = 1; idx < rthreads; idx++) {
         try {
-          g_udpReceivers[idx] = std::make_shared<UDPNameserver>(true);
+          s_udpReceivers[idx] = std::make_shared<UDPNameserver>(true);
         }
         catch (const PDNSException& e) {
           g_log << Logger::Error << "Unable to reuse port, falling back to original bind" << endl;
@@ -1444,18 +1467,33 @@ int main(int argc, char** argv)
       }
     }
 
-    TN = make_unique<TCPNameserver>();
+    s_tcpNameserver = make_unique<TCPNameserver>();
   }
   catch (const ArgException& A) {
     g_log << Logger::Error << "Fatal error: " << A.reason << endl;
+    exit(1);
+  }
+  catch (const std::exception& e) {
+    g_log << Logger::Error << "Fatal error: " << e.what() << endl;
     exit(1);
   }
 
   try {
     declareStats();
   }
-  catch (PDNSException& PE) {
+  catch (const PDNSException& PE) {
     g_log << Logger::Error << "Exiting because: " << PE.reason << endl;
+    exit(1);
+  }
+
+  try {
+    auto defaultCatalog = ::arg()["default-catalog-zone"];
+    if (!defaultCatalog.empty()) {
+      auto defCatalog = DNSName(defaultCatalog);
+    }
+  }
+  catch (const std::exception& e) {
+    g_log << Logger::Error << "Invalid value '" << ::arg()["default-catalog-zone"] << "' for default-catalog-zone: " << e.what() << endl;
     exit(1);
   }
   S.blacklist("special-memory-usage");
@@ -1467,14 +1505,24 @@ int main(int argc, char** argv)
   try {
     mainthread();
   }
-  catch (PDNSException& e) {
-    if (!::arg().mustDo("daemon"))
-      cerr << "Exiting because: " << e.reason << endl;
+  catch (const PDNSException& e) {
+    try {
+      if (!::arg().mustDo("daemon")) {
+        cerr << "Exiting because: " << e.reason << endl;
+      }
+    }
+    catch (const ArgException& A) {
+    }
     g_log << Logger::Error << "Exiting because: " << e.reason << endl;
   }
-  catch (std::exception& e) {
-    if (!::arg().mustDo("daemon"))
-      cerr << "Exiting because of STL error: " << e.what() << endl;
+  catch (const std::exception& e) {
+    try {
+      if (!::arg().mustDo("daemon")) {
+        cerr << "Exiting because of STL error: " << e.what() << endl;
+      }
+    }
+    catch (const ArgException& A) {
+    }
     g_log << Logger::Error << "Exiting because of STL error: " << e.what() << endl;
   }
   catch (...) {

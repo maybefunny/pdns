@@ -33,44 +33,54 @@
 #include "dnsdist-lua-ffi.hh"
 #include "dolog.hh"
 #include "dnsparser.hh"
+#include "dns_random.hh"
 
 class MaxQPSIPRule : public DNSRule
 {
 public:
-  MaxQPSIPRule(unsigned int qps, unsigned int burst, unsigned int ipv4trunc=32, unsigned int ipv6trunc=64, unsigned int expiration=300, unsigned int cleanupDelay=60, unsigned int scanFraction=10):
-    d_qps(qps), d_burst(burst), d_ipv4trunc(ipv4trunc), d_ipv6trunc(ipv6trunc), d_cleanupDelay(cleanupDelay), d_expiration(expiration), d_scanFraction(scanFraction)
+  MaxQPSIPRule(unsigned int qps, unsigned int burst, unsigned int ipv4trunc=32, unsigned int ipv6trunc=64, unsigned int expiration=300, unsigned int cleanupDelay=60, unsigned int scanFraction=10, size_t shardsCount=10):
+    d_shards(shardsCount), d_qps(qps), d_burst(burst), d_ipv4trunc(ipv4trunc), d_ipv6trunc(ipv6trunc), d_cleanupDelay(cleanupDelay), d_expiration(expiration), d_scanFraction(scanFraction)
   {
+    d_cleaningUp.clear();
     gettime(&d_lastCleanup, true);
   }
 
   void clear()
   {
-    d_limits.lock()->clear();
+    for (auto& shard : d_shards) {
+      shard.lock()->clear();
+    }
   }
 
   size_t cleanup(const struct timespec& cutOff, size_t* scannedCount=nullptr) const
   {
-    auto limits = d_limits.lock();
-    size_t toLook = limits->size() / d_scanFraction + 1;
-    size_t lookedAt = 0;
-
     size_t removed = 0;
-    auto& sequence = limits->get<SequencedTag>();
-    for (auto entry = sequence.begin(); entry != sequence.end() && lookedAt < toLook; lookedAt++) {
-      if (entry->d_limiter.seenSince(cutOff)) {
-        /* entries are ordered from least recently seen to more recently
-           seen, as soon as we see one that has not expired yet, we are
-           done */
-        lookedAt++;
-        break;
-      }
-
-      entry = sequence.erase(entry);
-      removed++;
+    if (scannedCount != nullptr) {
+      *scannedCount = 0;
     }
 
-    if (scannedCount != nullptr) {
-      *scannedCount = lookedAt;
+    for (auto& shard : d_shards) {
+      auto limits = shard.lock();
+      const size_t toLook = std::round((1.0 * limits->size()) / d_scanFraction)+ 1;
+      size_t lookedAt = 0;
+
+      auto& sequence = limits->get<SequencedTag>();
+      for (auto entry = sequence.begin(); entry != sequence.end() && lookedAt < toLook; lookedAt++) {
+        if (entry->d_limiter.seenSince(cutOff)) {
+          /* entries are ordered from least recently seen to more recently
+             seen, as soon as we see one that has not expired yet, we are
+             done */
+          lookedAt++;
+          break;
+        }
+
+        entry = sequence.erase(entry);
+        removed++;
+      }
+
+      if (scannedCount != nullptr) {
+        *scannedCount += lookedAt;
+      }
     }
 
     return removed;
@@ -83,26 +93,38 @@ public:
       cutOff.tv_sec += d_cleanupDelay;
 
       if (cutOff < now) {
-        /* the QPS Limiter doesn't use realtime, be careful! */
-        gettime(&cutOff, false);
-        cutOff.tv_sec -= d_expiration;
+        try {
+          if (d_cleaningUp.test_and_set()) {
+            return;
+          }
 
-        cleanup(cutOff);
+          d_lastCleanup = now;
+          /* the QPS Limiter doesn't use realtime, be careful! */
+          gettime(&cutOff, false);
+          cutOff.tv_sec -= d_expiration;
 
-        d_lastCleanup = now;
+          cleanup(cutOff);
+          d_cleaningUp.clear();
+        }
+        catch (...) {
+          d_cleaningUp.clear();
+          throw;
+        }
       }
     }
   }
 
   bool matches(const DNSQuestion* dq) const override
   {
-    cleanupIfNeeded(*dq->queryTime);
+    cleanupIfNeeded(dq->getQueryRealTime());
 
-    ComboAddress zeroport(*dq->remote);
+    ComboAddress zeroport(dq->ids.origRemote);
     zeroport.sin4.sin_port=0;
     zeroport.truncate(zeroport.sin4.sin_family == AF_INET ? d_ipv4trunc : d_ipv6trunc);
+    auto hash = ComboAddress::addressOnlyHash()(zeroport);
+    auto& shard = d_shards[hash % d_shards.size()];
     {
-      auto limits = d_limits.lock();
+      auto limits = shard.lock();
       auto iter = limits->find(zeroport);
       if (iter == limits->end()) {
         Entry e(zeroport, QPSLimiter(d_qps, d_burst));
@@ -121,11 +143,20 @@ public:
 
   size_t getEntriesCount() const
   {
-    return d_limits.lock()->size();
+    size_t count = 0;
+    for (auto& shard : d_shards) {
+      count += shard.lock()->size();
+    }
+    return count;
+  }
+
+  size_t getNumberOfShards() const
+  {
+    return d_shards.size();
   }
 
 private:
-  struct OrderedTag {};
+  struct HashedTag {};
   struct SequencedTag {};
   struct Entry
   {
@@ -139,15 +170,16 @@ private:
   typedef multi_index_container<
     Entry,
     indexed_by <
-      ordered_unique<tag<OrderedTag>, member<Entry,ComboAddress,&Entry::d_addr>, ComboAddress::addressOnlyLessThan >,
+      hashed_unique<tag<HashedTag>, member<Entry,ComboAddress,&Entry::d_addr>, ComboAddress::addressOnlyHash >,
       sequenced<tag<SequencedTag> >
       >
   > qpsContainer_t;
 
-  mutable LockGuarded<qpsContainer_t> d_limits;
+  mutable std::vector<LockGuarded<qpsContainer_t>> d_shards;
   mutable struct timespec d_lastCleanup;
-  unsigned int d_qps, d_burst, d_ipv4trunc, d_ipv6trunc, d_cleanupDelay, d_expiration;
-  unsigned int d_scanFraction{10};
+  const unsigned int d_qps, d_burst, d_ipv4trunc, d_ipv6trunc, d_cleanupDelay, d_expiration;
+  const unsigned int d_scanFraction{10};
+  mutable std::atomic_flag d_cleaningUp;
 };
 
 class MaxQPSRule : public DNSRule
@@ -196,9 +228,9 @@ public:
   bool matches(const DNSQuestion* dq) const override
   {
     if(!d_src) {
-        return d_nmg.match(*dq->local);
+        return d_nmg.match(dq->ids.origDest);
     }
-    return d_nmg.match(*dq->remote);
+    return d_nmg.match(dq->ids.origRemote);
   }
 
   string toString() const override
@@ -242,16 +274,16 @@ public:
   }
   bool matches(const DNSQuestion* dq) const override
   {
-    if (dq->remote->sin4.sin_family == AF_INET) {
+    if (dq->ids.origRemote.sin4.sin_family == AF_INET) {
       auto ip4s = d_ip4s.read_lock();
-      auto fnd = ip4s->find(dq->remote->sin4.sin_addr.s_addr);
+      auto fnd = ip4s->find(dq->ids.origRemote.sin4.sin_addr.s_addr);
       if (fnd == ip4s->end()) {
         return false;
       }
       return time(nullptr) < fnd->second;
     } else {
       auto ip6s = d_ip6s.read_lock();
-      auto fnd = ip6s->find({*dq->remote});
+      auto fnd = ip6s->find({dq->ids.origRemote});
       if (fnd == ip6s->end()) {
         return false;
       }
@@ -271,6 +303,7 @@ public:
     else {
       auto res = d_ip6s.write_lock()->insert({{ca}, ttd});
       if (!res.second && (time_t)res.first->second < ttd) {
+        // coverity[store_truncates_time_t]
         res.first->second = (uint32_t)ttd;
       }
     }
@@ -394,70 +427,72 @@ public:
 class AndRule : public DNSRule
 {
 public:
-  AndRule(const vector<pair<int, shared_ptr<DNSRule> > >& rules)
+  AndRule(const std::vector<pair<int, std::shared_ptr<DNSRule> > >& rules)
   {
-    for(const auto& r : rules)
+    for (const auto& r : rules) {
       d_rules.push_back(r.second);
+    }
   }
 
   bool matches(const DNSQuestion* dq) const override
   {
-    auto iter = d_rules.begin();
-    for(; iter != d_rules.end(); ++iter)
-      if(!(*iter)->matches(dq))
-        break;
-    return iter == d_rules.end();
+    for (const auto& rule : d_rules) {
+      if (!rule->matches(dq)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   string toString() const override
   {
     string ret;
-    for(const auto& rule : d_rules) {
-      if(!ret.empty())
+    for (const auto& rule : d_rules) {
+      if (!ret.empty()) {
         ret+= " && ";
+      }
       ret += "("+ rule->toString()+")";
     }
     return ret;
   }
 private:
-
-  vector<std::shared_ptr<DNSRule> > d_rules;
-
+  std::vector<std::shared_ptr<DNSRule> > d_rules;
 };
 
 
 class OrRule : public DNSRule
 {
 public:
-  OrRule(const vector<pair<int, shared_ptr<DNSRule> > >& rules)
+  OrRule(const std::vector<pair<int, std::shared_ptr<DNSRule> > >& rules)
   {
-    for(const auto& r : rules)
+    for (const auto& r : rules) {
       d_rules.push_back(r.second);
+    }
   }
 
   bool matches(const DNSQuestion* dq) const override
   {
-    auto iter = d_rules.begin();
-    for(; iter != d_rules.end(); ++iter)
-      if((*iter)->matches(dq))
+    for (const auto& rule: d_rules) {
+      if (rule->matches(dq)) {
         return true;
+      }
+    }
     return false;
   }
 
   string toString() const override
   {
     string ret;
-    for(const auto& rule : d_rules) {
-      if(!ret.empty())
+    for (const auto& rule : d_rules) {
+      if (!ret.empty()) {
         ret+= " || ";
+      }
       ret += "("+ rule->toString()+")";
     }
     return ret;
   }
 private:
-
-  vector<std::shared_ptr<DNSRule> > d_rules;
-
+  std::vector<std::shared_ptr<DNSRule> > d_rules;
 };
 
 
@@ -470,7 +505,7 @@ public:
   }
   bool matches(const DNSQuestion* dq) const override
   {
-    return d_regex.match(dq->qname->toStringNoDot());
+    return d_regex.match(dq->ids.qname.toStringNoDot());
   }
 
   string toString() const override
@@ -493,7 +528,7 @@ public:
   }
   bool matches(const DNSQuestion* dq) const override
   {
-    return RE2::FullMatch(dq->qname->toStringNoDot(), d_re2);
+    return RE2::FullMatch(dq->ids.qname.toStringNoDot(), d_re2);
   }
 
   string toString() const override
@@ -522,7 +557,7 @@ private:
 class HTTPPathRule : public DNSRule
 {
 public:
-  HTTPPathRule(const std::string& path);
+  HTTPPathRule(std::string path);
   bool matches(const DNSQuestion* dq) const override;
   string toString() const override;
 private:
@@ -567,7 +602,7 @@ public:
   }
   bool matches(const DNSQuestion* dq) const override
   {
-    return d_smn.check(*dq->qname);
+    return d_smn.check(dq->ids.qname);
   }
   string toString() const override
   {
@@ -590,7 +625,7 @@ public:
 
   bool matches(const DNSQuestion* dq) const override
   {
-    return d_qname==*dq->qname;
+    return d_qname==dq->ids.qname;
   }
   string toString() const override
   {
@@ -605,7 +640,7 @@ public:
     QNameSetRule(const DNSNameSet& names) : qname_idx(names) {}
 
     bool matches(const DNSQuestion* dq) const override {
-        return qname_idx.find(*dq->qname) != qname_idx.end();
+        return qname_idx.find(dq->ids.qname) != qname_idx.end();
     }
 
     string toString() const override {
@@ -625,7 +660,7 @@ public:
   }
   bool matches(const DNSQuestion* dq) const override
   {
-    return d_qtype == dq->qtype;
+    return d_qtype == dq->ids.qtype;
   }
   string toString() const override
   {
@@ -644,7 +679,7 @@ public:
   }
   bool matches(const DNSQuestion* dq) const override
   {
-    return d_qclass == dq->qclass;
+    return d_qclass == dq->ids.qclass;
   }
   string toString() const override
   {
@@ -680,7 +715,7 @@ public:
   }
   bool matches(const DNSQuestion* dq) const override
   {
-    return htons(d_port) == dq->local->sin4.sin_port;
+    return htons(d_port) == dq->ids.origDest.sin4.sin_port;
   }
   string toString() const override
   {
@@ -712,7 +747,7 @@ private:
 class NotRule : public DNSRule
 {
 public:
-  NotRule(shared_ptr<DNSRule>& rule): d_rule(rule)
+  NotRule(const std::shared_ptr<DNSRule>& rule): d_rule(rule)
   {
   }
   bool matches(const DNSQuestion* dq) const override
@@ -724,7 +759,7 @@ public:
     return "!("+ d_rule->toString()+")";
   }
 private:
-  shared_ptr<DNSRule> d_rule;
+  std::shared_ptr<DNSRule> d_rule;
 };
 
 class RecordsCountRule : public DNSRule
@@ -857,7 +892,7 @@ public:
   }
   bool matches(const DNSQuestion* dq) const override
   {
-    unsigned int count = dq->qname->countLabels();
+    unsigned int count = dq->ids.qname.countLabels();
     return count < d_min || count > d_max;
   }
   string toString() const override
@@ -877,7 +912,7 @@ public:
   }
   bool matches(const DNSQuestion* dq) const override
   {
-    size_t const wirelength = dq->qname->wirelength();
+    size_t const wirelength = dq->ids.qname.wirelength();
     return wirelength < d_min || wirelength > d_max;
   }
   string toString() const override
@@ -921,7 +956,7 @@ public:
     }
 
     EDNS0Record edns0;
-    if (!getEDNS0Record(*dq, edns0)) {
+    if (!getEDNS0Record(dq->getData(), edns0)) {
       return false;
     }
 
@@ -945,7 +980,7 @@ public:
   bool matches(const DNSQuestion* dq) const override
   {
     EDNS0Record edns0;
-    if (!getEDNS0Record(*dq, edns0)) {
+    if (!getEDNS0Record(dq->getData(), edns0)) {
       return false;
     }
 
@@ -1021,7 +1056,7 @@ public:
   {
     if(d_proba == 1.0)
       return true;
-    double rnd = 1.0*random() / RAND_MAX;
+    double rnd = 1.0*dns_random_uint32() / UINT32_MAX;
     return rnd > (1.0 - d_proba);
   }
   string toString() const override
@@ -1035,17 +1070,17 @@ private:
 class TagRule : public DNSRule
 {
 public:
-  TagRule(const std::string& tag, boost::optional<std::string> value) : d_value(value), d_tag(tag)
+  TagRule(const std::string& tag, boost::optional<std::string> value) : d_value(std::move(value)), d_tag(tag)
   {
   }
   bool matches(const DNSQuestion* dq) const override
   {
-    if (!dq->qTag) {
+    if (!dq->ids.qTag) {
       return false;
     }
 
-    const auto it = dq->qTag->find(d_tag);
-    if (it == dq->qTag->cend()) {
+    const auto it = dq->ids.qTag->find(d_tag);
+    if (it == dq->ids.qTag->cend()) {
       return false;
     }
 
@@ -1284,7 +1319,7 @@ private:
 class ProxyProtocolValueRule : public DNSRule
 {
 public:
-  ProxyProtocolValueRule(uint8_t type, boost::optional<std::string> value): d_value(value), d_type(type)
+  ProxyProtocolValueRule(uint8_t type, boost::optional<std::string> value): d_value(std::move(value)), d_type(type)
   {
   }
 
@@ -1314,4 +1349,67 @@ public:
 private:
   boost::optional<std::string> d_value;
   uint8_t d_type;
+};
+
+class PayloadSizeRule : public DNSRule
+{
+  enum class Comparisons : uint8_t { equal, greater, greaterOrEqual, smaller, smallerOrEqual };
+public:
+  PayloadSizeRule(const std::string& comparison, uint16_t size): d_size(size)
+  {
+    if (comparison == "equal") {
+      d_comparison = Comparisons::equal;
+    }
+    else if (comparison == "greater") {
+      d_comparison = Comparisons::greater;
+    }
+    else if (comparison == "greaterOrEqual") {
+      d_comparison = Comparisons::greaterOrEqual;
+    }
+    else if (comparison == "smaller") {
+      d_comparison = Comparisons::smaller;
+    }
+    else if (comparison == "smallerOrEqual") {
+      d_comparison = Comparisons::smallerOrEqual;
+    }
+    else {
+      throw std::runtime_error("Unsupported comparison '" + comparison + "'");
+    }
+  }
+
+  bool matches(const DNSQuestion* dq) const override
+  {
+    const auto size = dq->getData().size();
+
+    switch (d_comparison) {
+    case Comparisons::equal:
+      return size == d_size;
+    case Comparisons::greater:
+      return size > d_size;
+    case Comparisons::greaterOrEqual:
+      return size >= d_size;
+    case Comparisons::smaller:
+      return size < d_size;
+    case Comparisons::smallerOrEqual:
+      return size <= d_size;
+    default:
+      return false;
+    }
+  }
+
+  string toString() const override
+  {
+    static const std::array<const std::string, 5> comparisonStr{
+      "equal to" ,
+      "greater than",
+      "equal to or greater than",
+      "smaller than",
+      "equal to or smaller than"
+    };
+    return "payload size is " + comparisonStr.at(static_cast<size_t>(d_comparison)) + " " + std::to_string(d_size);
+  }
+
+private:
+  uint16_t d_size;
+  Comparisons d_comparison;
 };

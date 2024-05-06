@@ -52,7 +52,7 @@ master_doc = 'indexTOC'
 
 # General information about the project.
 project = 'PowerDNS Recursor'
-copyright = '2001-' + str(datetime.date.today().year) + ', PowerDNS.COM BV'
+copyright = 'PowerDNS.COM BV'
 author = 'PowerDNS.COM BV'
 
 # The version info for the project you're documenting, acts as replacement for
@@ -94,7 +94,7 @@ changelog_render_ticket = "https://github.com/PowerDNS/pdns/issues/%s"
 changelog_render_pullreq = "https://github.com/PowerDNS/pdns/pull/%s"
 changelog_render_changeset = "https://github.com/PowerDNS/pdns/commit/%s"
 
-changelog_sections = ['New Features', 'Improvements', 'Bug Fixes']
+changelog_sections = ['New Features', 'Improvements', 'Bug Fixes', 'Removals']
 changelog_inner_tag_sort = ['General', 'DNSSEC', 'Protobuf', 'RPZ']
 
 changelog_hide_tags_in_entry = True

@@ -136,7 +136,11 @@ Use the InnoDB READ-COMMITTED transaction isolation level. Default: yes.
 ``gmysql-ssl``
 ^^^^^^^^^^^^^^^^^^
 
-Send the CLIENT_SSL capability flag to the server. SSL support is announced by the server via CLIENT_SSL and is enabled if the client returns the same capability. Default: no.
+.. deprecated:: 5.0.0
+
+Before 5.0.0: Send the CLIENT_SSL capability flag to the server. SSL support is announced by the server via CLIENT_SSL and is enabled if the client returns the same capability. Default: no.
+
+5.0.0 and up: this option does nothing. Use ``gmysql-group`` and put your TLS settings in ``my.cnf``.
 
 .. _setting-gmysql-timeout:
 
@@ -158,7 +162,6 @@ Only enable this if you are certain you need to. For more discussion, see https:
 Default Schema
 --------------
 
-This is the 4.3 schema.
-The `4.2 schema <https://github.com/PowerDNS/pdns/blob/rel/auth-4.2.x/modules/gmysqlbackend/schema.mysql.sql>`_ and `the 4.1 schema <https://github.com/PowerDNS/pdns/blob/rel/auth-4.1.x/modules/gmysqlbackend/schema.mysql.sql>`_ are available on GitHub.
+This is the 4.7 schema.
 
 .. literalinclude:: ../../modules/gmysqlbackend/schema.mysql.sql

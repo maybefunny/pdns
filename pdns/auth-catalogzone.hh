@@ -24,7 +24,6 @@
 
 #include "ext/json11/json11.hpp"
 #include "base32.hh"
-#include "dnsbackend.hh"
 #include "dnssecinfra.hh"
 
 struct DomainInfo;
@@ -41,10 +40,10 @@ public:
     Consumer
   };
 
-  static const char* getTypeString(enum CatalogType type)
+  static const string& getTypeString(enum CatalogType type)
   {
-    const char* types[] = {"none", "producer", "consumer"};
-    return types[type];
+    static const std::array<const string, 3> types = {"none", "producer", "consumer"};
+    return types.at(type);
   }
 
   CatalogInfo() :

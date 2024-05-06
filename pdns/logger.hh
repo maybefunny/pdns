@@ -24,7 +24,9 @@
 #include <string>
 #include <ctime>
 #include <iostream>
+#include <optional>
 #include <sstream>
+#include <variant>
 #include <syslog.h>
 
 #include "namespaces.hh"
@@ -154,7 +156,7 @@ private:
   bool opened;
   bool d_disableSyslog;
   bool d_timestamps{true};
-  bool d_prefixed{false};
+  bool d_prefixed{false}; // this used to prefix the loglevel, but now causes formatting like structured logging
 };
 
 Logger& getLogger();
@@ -166,3 +168,47 @@ Logger& getLogger();
 #else
 #define DLOG(x) ((void)0)
 #endif
+
+// The types below are used by rec, which can log to g_log (general logging) or a string stream
+// (trace-regexp). We pass an OptLog object to the code that should not know anything about this
+// That code should then log using VLOG
+
+struct LogVariant
+{
+  string prefix;
+  timeval start;
+  // variant cannot hold references directly, use a wrapper
+  std::variant<std::reference_wrapper<Logger>, std::reference_wrapper<ostringstream>> v;
+};
+
+using OptLog = std::optional<LogVariant>;
+
+void addTraceTS(const timeval& start, ostringstream& str);
+
+// NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
+#define VLOG(log, x)                                                                                     \
+  if (log) {                                                                                             \
+    if (std::holds_alternative<std::reference_wrapper<Logger>>((log)->v)) {                              \
+      /* NOLINTNEXTLINE(bugprone-macro-parentheses) */                                                   \
+      std::get<std::reference_wrapper<Logger>>((log)->v).get() << Logger::Warning << (log)->prefix << x; \
+    }                                                                                                    \
+    else if (std::holds_alternative<std::reference_wrapper<ostringstream>>((log)->v)) {                  \
+      addTraceTS((log)->start, std::get<std::reference_wrapper<ostringstream>>((log)->v).get());         \
+      /* NOLINTNEXTLINE(bugprone-macro-parentheses) */                                                   \
+      std::get<std::reference_wrapper<ostringstream>>((log)->v).get() << (log)->prefix << x;             \
+    }                                                                                                    \
+  }
+
+// NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
+#define VLOG_NO_PREFIX(log, x)                                                                   \
+  if (log) {                                                                                     \
+    if (std::holds_alternative<std::reference_wrapper<Logger>>((log)->v)) {                      \
+      /* NOLINTNEXTLINE(bugprone-macro-parentheses) */                                           \
+      std::get<std::reference_wrapper<Logger>>((log)->v).get() << Logger::Warning << x;          \
+    }                                                                                            \
+    else if (std::holds_alternative<std::reference_wrapper<ostringstream>>((log)->v)) {          \
+      addTraceTS((log)->start, std::get<std::reference_wrapper<ostringstream>>((log)->v).get()); \
+      /* NOLINTNEXTLINE(bugprone-macro-parentheses) */                                           \
+      std::get<std::reference_wrapper<ostringstream>>((log)->v).get() << x;                      \
+    }                                                                                            \
+  }

@@ -23,6 +23,7 @@
 #include "dnsdist.hh"
 #include "dnsdist-dynblocks.hh"
 
+#ifndef DISABLE_DYNBLOCKS
 uint64_t dnsdist_ffi_stat_node_get_queries_count(const dnsdist_ffi_stat_node_t* node)
 {
   return node->self.queries;
@@ -51,6 +52,11 @@ uint64_t dnsdist_ffi_stat_node_get_drops_count(const dnsdist_ffi_stat_node_t* no
 uint64_t dnsdist_ffi_stat_node_get_bytes(const dnsdist_ffi_stat_node_t* node)
 {
   return node->self.bytes;
+}
+
+uint64_t dnsdist_ffi_stat_node_get_hits(const dnsdist_ffi_stat_node_t* node)
+{
+  return node->self.hits;
 }
 
 unsigned int dnsdist_ffi_stat_node_get_labels_count(const dnsdist_ffi_stat_node_t* node)
@@ -100,7 +106,18 @@ uint64_t dnsdist_ffi_stat_node_get_children_bytes_count(const dnsdist_ffi_stat_n
   return node->children.bytes;
 }
 
+uint64_t dnsdist_ffi_stat_node_get_children_hits(const dnsdist_ffi_stat_node_t* node)
+{
+  return node->children.hits;
+}
+
 void dnsdist_ffi_state_node_set_reason(dnsdist_ffi_stat_node_t* node, const char* reason, size_t reasonSize)
 {
-  node->reason = std::string(reason, reasonSize);
+  node->d_blockParameters.d_reason = std::string(reason, reasonSize);
 }
+
+void dnsdist_ffi_state_node_set_action(dnsdist_ffi_stat_node_t* node, int blockAction)
+{
+  node->d_blockParameters.d_action = static_cast<DNSAction::Action>(blockAction);
+}
+#endif /* DISABLE_DYNBLOCKS */

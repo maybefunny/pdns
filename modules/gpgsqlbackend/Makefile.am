@@ -1,4 +1,5 @@
-AM_CPPFLAGS += $(PGSQL_CFLAGS)
+AM_CPPFLAGS += $(PGSQL_CFLAGS) \
+	$(LIBCRYPTO_INCLUDES)
 pkglib_LTLIBRARIES = libgpgsqlbackend.la
 
 EXTRA_DIST = \
@@ -11,7 +12,8 @@ dist_doc_DATA = \
 	dnssec-3.x_to_3.4.0_schema.pgsql.sql \
 	3.4.0_to_4.1.0_schema.pgsql.sql \
 	4.1.0_to_4.2.0_schema.pgsql.sql \
-	4.2.0_to_4.3.0_schema.pgsql.sql
+	4.2.0_to_4.3.0_schema.pgsql.sql \
+	4.3.0_to_4.7.0_schema.pgsql.sql
 
 libgpgsqlbackend_la_SOURCES = \
 	gpgsqlbackend.cc gpgsqlbackend.hh \

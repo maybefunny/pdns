@@ -1,0 +1,100 @@
+#include "xdp.h"
+
+BPF_TABLE_PINNED("prog", int, int, progsarray, 2, "/sys/fs/bpf/dnsdist/progs");
+BPF_PERF_OUTPUT(events);
+
+/*
+ * Parse DNS QName and fill the struct
+ */
+static inline void parse_qname(struct cursor* c, struct dns_qname* query) {
+  uint8_t qname_byte;
+  uint16_t qtype;
+  int length = 0;
+
+  for (int i = 0; i < 255; i++) {
+    bpf_probe_read_kernel(&qname_byte, sizeof(qname_byte), c->pos);
+
+    c->pos += 1;
+    if (length == 0) {
+      if (qname_byte == 0 || qname_byte > 63) {
+        break;
+      }
+      length += qname_byte;
+    } else {
+      length--;
+    }
+    if (qname_byte >= 'A' && qname_byte <= 'Z') {
+      query->qname[i] = qname_byte + ('a' - 'A');
+    } else {
+      query->qname[i] = qname_byte;
+    }
+  }
+
+  bpf_probe_read_kernel(&(query->qtype), sizeof(query->qtype), c->pos);
+}
+
+/*
+ * Push data regarding the dropped/redirected packet to a perf buffer
+ */
+static inline void log_packet(struct xdp_md* ctx, enum dns_action action) {
+  // store variables
+  struct cursor c;
+  struct ethhdr* eth;
+  uint16_t eth_proto;
+  struct iphdr* ipv4;
+  struct ipv6hdr* ipv6;
+  struct udphdr* udp;
+  struct dnshdr* dns;
+  int r = 0;
+
+  struct pktdata {
+    uint32_t ipv4_src;
+    uint8_t ipv6_src[16];
+    struct dns_qname query;
+  } packet_info = {0};
+
+  // initialise the cursor
+  cursor_init(&c, ctx);
+
+  if ((eth = parse_eth(&c, &eth_proto))) {
+    if (eth_proto == bpf_htons(ETH_P_IP)) {
+      if ((ipv4 = parse_iphdr(&c))) {
+        if (action == DROP) {
+          memcpy(&(packet_info.ipv4_src), &(ipv4->saddr), sizeof(packet_info.ipv4_src));
+        } else if (action == TC) {
+          memcpy(&(packet_info.ipv4_src), &(ipv4->daddr), sizeof(packet_info.ipv4_src));
+        }
+        if ((udp = parse_udphdr(&c))) {
+          if ((dns = parse_dnshdr(&c))) {
+            parse_qname(&c, &(packet_info.query));
+          }
+        }
+      }
+
+    } else if (eth_proto == bpf_htons(ETH_P_IPV6)) {
+      if ((ipv6 = parse_ipv6hdr(&c))) {
+        if (action == DROP) {
+          memcpy(&(packet_info.ipv6_src), &(ipv6->saddr.in6_u.u6_addr8), 16);
+        } else if (action == TC) {
+          memcpy(&(packet_info.ipv6_src), &(ipv6->daddr.in6_u.u6_addr8), 16);
+        }
+        if ((udp = parse_udphdr(&c))) {
+          if ((dns = parse_dnshdr(&c))) {
+            parse_qname(&c, &(packet_info.query));
+          }
+        }
+      }
+    }
+  }
+  events.perf_submit(ctx, &packet_info, sizeof(packet_info));
+}
+
+int log_drop(struct xdp_md* ctx) {
+  log_packet(ctx, DROP);
+  return XDP_DROP;
+}
+
+int log_tc(struct xdp_md* ctx) {
+  log_packet(ctx, TC);
+  return XDP_TX;
+}

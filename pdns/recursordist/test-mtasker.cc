@@ -1,4 +1,7 @@
+#ifndef BOOST_TEST_DYN_LINK
 #define BOOST_TEST_DYN_LINK
+#endif
+
 #define BOOST_TEST_NO_MAIN
 
 #ifdef HAVE_CONFIG_H
@@ -6,6 +9,7 @@
 #endif
 #include <boost/test/unit_test.hpp>
 #include "mtasker.hh"
+#include <fcntl.h>
 
 BOOST_AUTO_TEST_SUITE(mtasker_cc)
 
@@ -28,8 +32,9 @@ BOOST_AUTO_TEST_CASE(test_Simple)
   bool first = true;
   int o = 24;
   for (;;) {
-    while (mt.schedule(&now))
-      ;
+    while (mt.schedule(now)) {
+    }
+
     if (first) {
       mt.sendEvent(12, &o);
       first = false;
@@ -38,9 +43,49 @@ BOOST_AUTO_TEST_CASE(test_Simple)
       break;
   }
   BOOST_CHECK_EQUAL(g_result, o);
+  vector<int> events;
+  mt.getEvents(events);
+  BOOST_CHECK_EQUAL(events.size(), 0U);
 }
 
-static void willThrow(void* p)
+static const size_t stackSize = 8 * 1024;
+static const size_t headroom = 1536; // Decrease to hit stackoverflow
+
+static void doAlmostStackoverflow(void* arg)
+{
+  auto* mt = reinterpret_cast<MTasker<>*>(arg);
+  int localvar[stackSize / sizeof(int) - headroom]; // experimentally derived headroom
+  localvar[0] = 0;
+  localvar[sizeof(localvar) / sizeof(localvar[0]) - 1] = 12;
+  if (mt->waitEvent(localvar[sizeof(localvar) / sizeof(localvar[0]) - 1], &localvar[0]) == 1) {
+    g_result = localvar[0];
+  }
+}
+
+BOOST_AUTO_TEST_CASE(test_AlmostStackOverflow)
+{
+  MTasker<> mt(stackSize);
+  mt.makeThread(doAlmostStackoverflow, &mt);
+  struct timeval now;
+  gettimeofday(&now, 0);
+  bool first = true;
+  int o = 25;
+  for (;;) {
+    while (mt.schedule(now)) {
+      ;
+    }
+    if (first) {
+      mt.sendEvent(12, &o);
+      first = false;
+    }
+    if (mt.noProcesses()) {
+      break;
+    }
+  }
+  BOOST_CHECK_EQUAL(g_result, o);
+}
+
+static void willThrow(void* /* p */)
 {
   throw std::runtime_error("Help!");
 }
@@ -54,9 +99,10 @@ BOOST_AUTO_TEST_CASE(test_MtaskerException)
     now.tv_sec = now.tv_usec = 0;
 
     for (;;) {
-      mt.schedule(&now);
+      mt.schedule(now);
     }
   },
                     std::exception);
 }
+
 BOOST_AUTO_TEST_SUITE_END()

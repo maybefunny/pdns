@@ -24,7 +24,7 @@
 #include <sstream>
 #include <iostream>
 #include "iputils.hh"
-#include <errno.h>
+#include <cerrno>
 #include <sys/types.h>
 #include <unistd.h>
 #include <sys/socket.h>
@@ -38,9 +38,9 @@
 #include <boost/utility.hpp>
 #include <csignal>
 #include "namespaces.hh"
+#include "noinitvector.hh"
 
-
-typedef int ProtocolType; //!< Supported protocol types
+using ProtocolType = int; //!< Supported protocol types
 
 //! Representation of a Socket and many of the Berkeley functions available
 class Socket : public boost::noncopyable
@@ -58,12 +58,13 @@ public:
     setCloseOnExec(d_socket);
   }
 
-  Socket(Socket&& rhs): d_buffer(std::move(rhs.d_buffer)), d_socket(rhs.d_socket)
+  Socket(Socket&& rhs) noexcept :
+    d_buffer(std::move(rhs.d_buffer)), d_socket(rhs.d_socket)
   {
     rhs.d_socket = -1;
   }
 
-  Socket& operator=(Socket&& rhs)
+  Socket& operator=(Socket&& rhs) noexcept
   {
     if (d_socket != -1) {
       close(d_socket);
@@ -173,61 +174,68 @@ public:
   /** For datagram sockets, receive a datagram and learn where it came from
       \param dgram Will be filled with the datagram
       \param ep Will be filled with the origin of the datagram */
-  void recvFrom(string &dgram, ComboAddress &ep)
+  void recvFrom(string &dgram, ComboAddress& remote)
   {
-    socklen_t remlen = sizeof(ep);
-    ssize_t bytes;
-    d_buffer.resize(s_buflen);
-    if((bytes=recvfrom(d_socket, &d_buffer[0], s_buflen, 0, reinterpret_cast<sockaddr *>(&ep) , &remlen)) <0)
-      throw NetworkError("After recvfrom: "+stringerror());
-    
-    dgram.assign(d_buffer, 0, static_cast<size_t>(bytes));
+    socklen_t remlen = sizeof(remote);
+    if (dgram.size() < s_buflen) {
+      dgram.resize(s_buflen);
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    auto bytes = recvfrom(d_socket, dgram.data(), dgram.size(), 0, reinterpret_cast<sockaddr *>(&remote) , &remlen);
+    if (bytes < 0) {
+      throw NetworkError("After recvfrom: " + stringerror());
+    }
+    dgram.resize(static_cast<size_t>(bytes));
   }
 
-  bool recvFromAsync(string &dgram, ComboAddress &ep)
+  bool recvFromAsync(PacketBuffer& dgram, ComboAddress& remote)
   {
-    struct sockaddr_in remote;
     socklen_t remlen = sizeof(remote);
-    ssize_t bytes;
-    d_buffer.resize(s_buflen);
-    if((bytes=recvfrom(d_socket, &d_buffer[0], s_buflen, 0, reinterpret_cast<sockaddr *>(&remote), &remlen))<0) {
-      if(errno!=EAGAIN) {
-        throw NetworkError("After async recvfrom: "+stringerror());
+    if (dgram.size() < s_buflen) {
+      dgram.resize(s_buflen);
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    auto bytes = recvfrom(d_socket, dgram.data(), dgram.size(), 0, reinterpret_cast<sockaddr *>(&remote), &remlen);
+    if (bytes < 0) {
+      if (errno != EAGAIN) {
+        throw NetworkError("After async recvfrom: " + stringerror());
       }
       else {
         return false;
       }
     }
-    dgram.assign(d_buffer, 0, static_cast<size_t>(bytes));
+    dgram.resize(static_cast<size_t>(bytes));
     return true;
   }
 
-
   //! For datagram sockets, send a datagram to a destination
-  void sendTo(const char* msg, size_t len, const ComboAddress &ep)
+  void sendTo(const char* msg, size_t len, const ComboAddress& remote)
   {
-    if(sendto(d_socket, msg, len, 0, reinterpret_cast<const sockaddr *>(&ep), ep.getSocklen())<0)
-      throw NetworkError("After sendto: "+stringerror());
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    if (sendto(d_socket, msg, len, 0, reinterpret_cast<const sockaddr *>(&remote), remote.getSocklen()) < 0) {
+      throw NetworkError("After sendto: " + stringerror());
+    }
   }
 
   //! For connected datagram sockets, send a datagram
   void send(const std::string& msg)
   {
-    if(::send(d_socket, msg.c_str(), msg.size(), 0)<0)
+    if (::send(d_socket, msg.data(), msg.size(), 0) < 0) {
       throw NetworkError("After send: "+stringerror());
+    }
   }
 
-  
+
   /** For datagram sockets, send a datagram to a destination
       \param dgram The datagram
-      \param ep The intended destination of the datagram */
-  void sendTo(const string &dgram, const ComboAddress &ep)
+      \param remote The intended destination of the datagram */
+  void sendTo(const string& dgram, const ComboAddress& remote)
   {
-    sendTo(dgram.c_str(), dgram.length(), ep);
+    sendTo(dgram.data(), dgram.length(), remote);
   }
 
 
-  //! Write this data to the socket, taking care that all bytes are written out 
+  //! Write this data to the socket, taking care that all bytes are written out
   void writen(const string &data)
   {
     if(data.empty())
@@ -239,7 +247,7 @@ public:
 
     do {
       res=::send(d_socket, ptr, toWrite, 0);
-      if(res<0) 
+      if(res<0)
         throw NetworkError("Writing to a socket: "+stringerror());
       if(!res)
         throw NetworkError("EOF on socket");
@@ -266,7 +274,7 @@ public:
 
     if(errno==EAGAIN)
       return 0;
-    
+
     throw NetworkError("Writing to a socket: "+stringerror());
   }
 
@@ -310,7 +318,7 @@ public:
     }
   }
 
-  //! reads one character from the socket 
+  //! reads one character from the socket
   int getChar()
   {
     char c;
@@ -337,7 +345,7 @@ public:
   {
     d_buffer.resize(s_buflen);
     ssize_t res=::recv(d_socket, &d_buffer[0], s_buflen, 0);
-    if(res<0) 
+    if(res<0)
       throw NetworkError("Reading from a socket: "+stringerror());
     data.assign(d_buffer, 0, static_cast<size_t>(res));
   }
@@ -346,11 +354,16 @@ public:
   size_t read(char *buffer, size_t bytes)
   {
     ssize_t res=::recv(d_socket, buffer, bytes, 0);
-    if(res<0) 
+    if(res<0)
       throw NetworkError("Reading from a socket: "+stringerror());
     return static_cast<size_t>(res);
   }
 
+  /** Read a bock of data from the socket to a block of memory,
+  *   waiting at most 'timeout' seconds for the data to become
+  *   available. Be aware that this does _NOT_ handle partial reads
+  *   for you.
+  */
   ssize_t readWithTimeout(char* buffer, size_t n, int timeout)
   {
     int err = waitForRWData(d_socket, true, timeout, 0);
@@ -363,7 +376,7 @@ public:
     return read(buffer, n);
   }
 
-  //! Sets the socket to listen with a default listen backlog of 10 pending connections 
+  //! Sets the socket to listen with a default listen backlog of 10 pending connections
   void listen(unsigned int length=10)
   {
     if(::listen(d_socket,length)<0)

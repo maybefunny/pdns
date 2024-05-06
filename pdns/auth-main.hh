@@ -35,22 +35,14 @@
 #include "tcpreceiver.hh"
 #include "dnsseckeeper.hh"
 
+extern time_t g_starttime;
 extern ArgvMap theArg;
 extern StatBag S; //!< Statistics are gathered across PDNS via the StatBag class S
 extern AuthPacketCache PC; //!< This is the main PacketCache, shared across all threads
 extern AuthQueryCache QC;
 extern std::unique_ptr<DNSProxy> DP;
-extern std::unique_ptr<DynListener> dl;
 extern CommunicatorClass Communicator;
-extern std::shared_ptr<UDPNameserver> N;
-extern vector<std::shared_ptr<UDPNameserver>> g_udpReceivers;
-extern double avg_latency;
-extern std::unique_ptr<TCPNameserver> TN;
-extern void declareArguments();
-extern void declareStats();
-extern void mainthread();
-extern int isGuarded(char**);
-void carbonDumpThread();
+void carbonDumpThread(); // Implemented in auth-carbon.cc. Avoids having an auth-carbon.hh declaring exactly one function.
 extern bool g_anyToTcp;
 extern bool g_8bitDNS;
 extern NetmaskGroup g_proxyProtocolACL;
@@ -58,6 +50,9 @@ extern size_t g_proxyProtocolMaximumSize;
 #ifdef HAVE_LUA_RECORDS
 extern bool g_doLuaRecord;
 extern bool g_LuaRecordSharedState;
+extern bool g_luaRecordInsertWhitespace;
 extern time_t g_luaHealthChecksInterval;
 extern time_t g_luaHealthChecksExpireDelay;
+extern time_t g_luaConsistentHashesExpireDelay;
+extern time_t g_luaConsistentHashesCleanupInterval;
 #endif // HAVE_LUA_RECORDS
